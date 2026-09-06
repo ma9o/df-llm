@@ -1,0 +1,455 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: ./df-ascii
+
+Print the current Dwarf Fortress Premium UI text and map state.
+
+UI rows come from the untouched Premium character layer. For the map, the
+command runs one isolated classic render pass in DF's back buffer, copies the
+viewport, and restores that buffer without publishing the temporary frame. DF
+itself therefore supplies terrain, object, creature, and overlay glyph rules
+without switching the visible Premium UI.
+
+  -h, --help
+          Show this help.
+
+The adjacent native dfhack-run client supports macOS/CrossOver and reads the
+game's configured RPC port. Set DFHACK_PORT to override the port, or DFHACK_RUN
+to use another executable dfhack-run client.
+EOF
+}
+
+case "${1:-}" in
+    "") ;;
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    *)
+        printf 'df-ascii: unknown option: %s\n' "$1" >&2
+        usage >&2
+        exit 2
+        ;;
+esac
+
+if (( $# > 1 )); then
+    printf 'df-ascii: expected no arguments\n' >&2
+    usage >&2
+    exit 2
+fi
+
+dfhack_runner=
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+if [[ -n ${DFHACK_RUN:-} ]]; then
+    if [[ ! -x $DFHACK_RUN ]]; then
+        printf 'df-ascii: DFHACK_RUN is not executable: %s\n' "$DFHACK_RUN" >&2
+        exit 1
+    fi
+    dfhack_runner=$DFHACK_RUN
+elif [[ -x "$script_dir/dfhack-run" ]]; then
+    dfhack_runner="$script_dir/dfhack-run"
+elif command -v dfhack-run >/dev/null 2>&1; then
+    dfhack_runner=$(command -v dfhack-run)
+else
+    dfhack_candidates=(
+        "$HOME/.local/share/Steam/steamapps/common/DFHack/dfhack-run"
+        "$HOME/.steam/steam/steamapps/common/DFHack/dfhack-run"
+        "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/DFHack/dfhack-run"
+    )
+
+    for dfhack_candidate in "${dfhack_candidates[@]}"; do
+        if [[ -x $dfhack_candidate ]]; then
+            dfhack_runner=$dfhack_candidate
+            break
+        fi
+    done
+fi
+
+if [[ -z $dfhack_runner ]]; then
+    printf '%s\n' \
+        'df-ascii: could not find dfhack-run; set DFHACK_RUN to its path' >&2
+    exit 1
+fi
+
+# DF encodes classic font tiles as IBM VGA/CP437 bytes. Printable ASCII maps
+# directly; this table gives every graphical control and upper-half byte a
+# Unicode display equivalent. The upper half follows the Unicode CP437 table.
+lua_program='
+local cp437_unicode = {
+    [1] = 0x263A, [2] = 0x263B, [3] = 0x2665, [4] = 0x2666,
+    [5] = 0x2663, [6] = 0x2660, [7] = 0x2022, [8] = 0x25D8,
+    [9] = 0x25CB, [10] = 0x25D9, [11] = 0x2642, [12] = 0x2640,
+    [13] = 0x266A, [14] = 0x266B, [15] = 0x263C, [16] = 0x25BA,
+    [17] = 0x25C4, [18] = 0x2195, [19] = 0x203C, [20] = 0x00B6,
+    [21] = 0x00A7, [22] = 0x25AC, [23] = 0x21A8, [24] = 0x2191,
+    [25] = 0x2193, [26] = 0x2192, [27] = 0x2190, [28] = 0x221F,
+    [29] = 0x2194, [30] = 0x25B2, [31] = 0x25BC, [127] = 0x2302,
+    [128] = 0x00C7, [129] = 0x00FC, [130] = 0x00E9, [131] = 0x00E2,
+    [132] = 0x00E4, [133] = 0x00E0, [134] = 0x00E5, [135] = 0x00E7,
+    [136] = 0x00EA, [137] = 0x00EB, [138] = 0x00E8, [139] = 0x00EF,
+    [140] = 0x00EE, [141] = 0x00EC, [142] = 0x00C4, [143] = 0x00C5,
+    [144] = 0x00C9, [145] = 0x00E6, [146] = 0x00C6, [147] = 0x00F4,
+    [148] = 0x00F6, [149] = 0x00F2, [150] = 0x00FB, [151] = 0x00F9,
+    [152] = 0x00FF, [153] = 0x00D6, [154] = 0x00DC, [155] = 0x00A2,
+    [156] = 0x00A3, [157] = 0x00A5, [158] = 0x20A7, [159] = 0x0192,
+    [160] = 0x00E1, [161] = 0x00ED, [162] = 0x00F3, [163] = 0x00FA,
+    [164] = 0x00F1, [165] = 0x00D1, [166] = 0x00AA, [167] = 0x00BA,
+    [168] = 0x00BF, [169] = 0x2310, [170] = 0x00AC, [171] = 0x00BD,
+    [172] = 0x00BC, [173] = 0x00A1, [174] = 0x00AB, [175] = 0x00BB,
+    [176] = 0x2591, [177] = 0x2592, [178] = 0x2593, [179] = 0x2502,
+    [180] = 0x2524, [181] = 0x2561, [182] = 0x2562, [183] = 0x2556,
+    [184] = 0x2555, [185] = 0x2563, [186] = 0x2551, [187] = 0x2557,
+    [188] = 0x255D, [189] = 0x255C, [190] = 0x255B, [191] = 0x2510,
+    [192] = 0x2514, [193] = 0x2534, [194] = 0x252C, [195] = 0x251C,
+    [196] = 0x2500, [197] = 0x253C, [198] = 0x255E, [199] = 0x255F,
+    [200] = 0x255A, [201] = 0x2554, [202] = 0x2569, [203] = 0x2566,
+    [204] = 0x2560, [205] = 0x2550, [206] = 0x256C, [207] = 0x2567,
+    [208] = 0x2568, [209] = 0x2564, [210] = 0x2565, [211] = 0x2559,
+    [212] = 0x2558, [213] = 0x2552, [214] = 0x2553, [215] = 0x256B,
+    [216] = 0x256A, [217] = 0x2518, [218] = 0x250C, [219] = 0x2588,
+    [220] = 0x2584, [221] = 0x258C, [222] = 0x2590, [223] = 0x2580,
+    [224] = 0x03B1, [225] = 0x00DF, [226] = 0x0393, [227] = 0x03C0,
+    [228] = 0x03A3, [229] = 0x03C3, [230] = 0x00B5, [231] = 0x03C4,
+    [232] = 0x03A6, [233] = 0x0398, [234] = 0x03A9, [235] = 0x03B4,
+    [236] = 0x221E, [237] = 0x03C6, [238] = 0x03B5, [239] = 0x2229,
+    [240] = 0x2261, [241] = 0x00B1, [242] = 0x2265, [243] = 0x2264,
+    [244] = 0x2320, [245] = 0x2321, [246] = 0x00F7, [247] = 0x2248,
+    [248] = 0x00B0, [249] = 0x2219, [250] = 0x00B7, [251] = 0x221A,
+    [252] = 0x207F, [253] = 0x00B2, [254] = 0x25A0, [255] = 0x00A0,
+}
+
+local function code_to_glyph(code)
+    code = code or 0
+    if code == 0 then return " " end
+    if code >= 32 and code <= 126 then return string.char(code) end
+    local unicode = cp437_unicode[code]
+    return unicode and utf8.char(unicode) or utf8.char(0xFFFD)
+end
+
+if not dfhack.isMapLoaded() then
+    qerror("no map is loaded")
+end
+
+local screen = dfhack.gui.getCurViewscreen()
+local gps = df.global.gps
+local viewport = gps and gps.main_viewport
+local display_flag = df.global.init and df.global.init.display.flag
+local origin_x = df.global.window_x
+local origin_y = df.global.window_y
+local origin_z = df.global.window_z
+
+if not screen or not viewport or not display_flag
+    or viewport.dim_x <= 0 or viewport.dim_y <= 0
+    or origin_x == nil or origin_y == nil or origin_z == nil then
+    qerror("no usable map viewport")
+end
+
+local adventure = df.global.adventure
+if df.viewscreen_dungeonmodest:is_instance(screen) and adventure
+    and adventure.player_control_state
+        ~= df.adventure_game_loop_type.TAKING_INPUT then
+    qerror("adventure turn is still processing (" ..
+        tostring(df.adventure_game_loop_type[adventure.player_control_state]) ..
+        "); wait for TAKING_INPUT before capturing")
+end
+
+local map_width = viewport.dim_x
+local map_height = viewport.dim_y
+local tick = df.global.enabler.clock
+local was_graphics = display_flag.USE_GRAPHICS
+local captured = {}
+local ui_captured = {}
+
+if map_width > gps.dimx or map_height > gps.dimy then
+    qerror("map viewport exceeds the screen buffer")
+end
+
+-- DF renders into gps.* back buffers. The window renderer owns a different
+-- front-buffer set and only receives these buffers when enabler.flag.render is
+-- consumed. Save the complete back-buffer set, suppress publication, run the
+-- native classic pass, copy its character bytes, and restore the original
+-- buffers before allowing the pending Premium frame to continue.
+local screen_cells = gps.dimx * gps.dimy
+local screen_bytes = screen_cells * 8
+local buffer_specs = {}
+local saved_buffer_offsets = {}
+local arena_bytes = 0
+
+local function add_buffer(name, element_count)
+    local ptr = gps[name]
+    if not ptr then return end
+    local element_size = df.sizeof(ptr)
+    local byte_count = element_count * element_size
+    table.insert(buffer_specs, {
+        name = name,
+        ptr = ptr,
+        bytes = byte_count,
+        saved_offset = arena_bytes,
+    })
+    saved_buffer_offsets[name] = arena_bytes
+    arena_bytes = arena_bytes + byte_count
+end
+
+add_buffer("screen", screen_cells * 8)
+add_buffer("screentexpos", screen_cells)
+add_buffer("screentexpos_lower", screen_cells)
+add_buffer("screentexpos_anchored", screen_cells)
+add_buffer("screentexpos_anchored_x", screen_cells)
+add_buffer("screentexpos_anchored_y", screen_cells)
+add_buffer("screentexpos_flag", screen_cells)
+add_buffer("screen_top", screen_cells * 8)
+add_buffer("screentexpos_top", screen_cells)
+add_buffer("screentexpos_top_lower", screen_cells)
+add_buffer("screentexpos_top_anchored", screen_cells)
+add_buffer("screentexpos_top_anchored_x", screen_cells)
+add_buffer("screentexpos_top_anchored_y", screen_cells)
+add_buffer("screentexpos_top_flag", screen_cells)
+add_buffer("screentexpos_refresh_buffer", screen_cells)
+
+local classic_screen_offset = arena_bytes
+arena_bytes = arena_bytes + screen_bytes
+local classic_top_offset = arena_bytes
+arena_bytes = arena_bytes + screen_bytes
+
+local arena = df.new("uint8_t", arena_bytes)
+local function arena_at(offset)
+    return arena:_displace(offset)
+end
+
+for _, spec in ipairs(buffer_specs) do
+    dfhack.internal.memmove(
+        arena_at(spec.saved_offset), spec.ptr, spec.bytes)
+end
+
+local enabler = df.global.enabler
+local saved_state = {
+    render = enabler.flag.render,
+    force_full_display_count = gps.force_full_display_count,
+    refresh_buffer_val = gps.refresh_buffer_val,
+    top_in_use = gps.top_in_use,
+    screenx = gps.screenx,
+    screeny = gps.screeny,
+    screenf = gps.screenf,
+    screenb = gps.screenb,
+    screenbright = gps.screenbright,
+    use_old_16_colors = gps.use_old_16_colors,
+    screen_color_r = gps.screen_color_r,
+    screen_color_g = gps.screen_color_g,
+    screen_color_b = gps.screen_color_b,
+    screen_color_br = gps.screen_color_br,
+    screen_color_bg = gps.screen_color_bg,
+    screen_color_bb = gps.screen_color_bb,
+    clipx0 = gps.clipx[0],
+    clipx1 = gps.clipx[1],
+    clipy0 = gps.clipy[0],
+    clipy1 = gps.clipy[1],
+}
+
+local saved_texblits = {}
+for i = 0, #gps.texblits - 1 do
+    local blit = gps.texblits[i]
+    saved_texblits[i + 1] = {x = blit.x, y = blit.y, tex = blit.tex}
+end
+
+local saved_viewport_flags = {}
+for i = 0, #gps.viewport - 1 do
+    local item = gps.viewport[i]
+    if item then
+        saved_viewport_flags[#saved_viewport_flags + 1] = {
+            ref = item,
+            active = item.flag.active,
+            show_liquid_numbers = item.flag.show_liquid_numbers,
+        }
+    end
+end
+
+local saved_map_port_flags = {}
+for i = 0, #gps.map_port - 1 do
+    local item = gps.map_port[i]
+    if item then
+        saved_map_port_flags[#saved_map_port_flags + 1] = {
+            ref = item,
+            active = item.flag.active,
+        }
+    end
+end
+
+local rendered_top_in_use = false
+local capture_ok, capture_err = xpcall(function()
+    enabler.flag.render = false
+
+    -- CoreSuspender has stopped the DF async game/render-preparation thread. Give
+    -- the SDL display thread two of its configured frame periods to finish any
+    -- frame already in progress and block waiting for that stopped thread. It
+    -- therefore cannot sample USE_GRAPHICS during the temporary mode change.
+    local graphics_fps = math.max(1, tonumber(enabler.gfps) or 50)
+    local display_sync_ms = math.min(250,
+        math.max(30, math.ceil(2000 / graphics_fps)))
+    local display_sync_start = dfhack.getTickCount()
+    while dfhack.getTickCount() - display_sync_start < display_sync_ms do end
+
+    display_flag.USE_GRAPHICS = false
+    screen:render(tick)
+
+    rendered_top_in_use = gps.top_in_use
+    dfhack.internal.memmove(
+        arena_at(classic_screen_offset), gps.screen, screen_bytes)
+    dfhack.internal.memmove(
+        arena_at(classic_top_offset), gps.screen_top, screen_bytes)
+end, debug.traceback)
+
+-- Switch the mode back first. Even though the render flag remains suppressed,
+-- this keeps the global mode change as short as the native render itself.
+display_flag.USE_GRAPHICS = was_graphics
+
+local restore_ok, restore_err = xpcall(function()
+    for _, spec in ipairs(buffer_specs) do
+        dfhack.internal.memmove(
+            spec.ptr, arena_at(spec.saved_offset), spec.bytes)
+    end
+
+    gps.force_full_display_count = saved_state.force_full_display_count
+    gps.refresh_buffer_val = saved_state.refresh_buffer_val
+    gps.top_in_use = saved_state.top_in_use
+    gps.screenx = saved_state.screenx
+    gps.screeny = saved_state.screeny
+    gps.screenf = saved_state.screenf
+    gps.screenb = saved_state.screenb
+    gps.screenbright = saved_state.screenbright
+    gps.use_old_16_colors = saved_state.use_old_16_colors
+    gps.screen_color_r = saved_state.screen_color_r
+    gps.screen_color_g = saved_state.screen_color_g
+    gps.screen_color_b = saved_state.screen_color_b
+    gps.screen_color_br = saved_state.screen_color_br
+    gps.screen_color_bg = saved_state.screen_color_bg
+    gps.screen_color_bb = saved_state.screen_color_bb
+    gps.clipx[0] = saved_state.clipx0
+    gps.clipx[1] = saved_state.clipx1
+    gps.clipy[0] = saved_state.clipy0
+    gps.clipy[1] = saved_state.clipy1
+
+    gps.texblits:resize(#saved_texblits)
+    for i, blit in ipairs(saved_texblits) do
+        gps.texblits[i - 1]:assign(blit)
+    end
+
+    for _, item in ipairs(saved_viewport_flags) do
+        item.ref.flag.active = item.active
+        item.ref.flag.show_liquid_numbers = item.show_liquid_numbers
+    end
+    for _, item in ipairs(saved_map_port_flags) do
+        item.ref.flag.active = item.active
+    end
+
+    for _, spec in ipairs(buffer_specs) do
+        if dfhack.internal.memcmp(
+                spec.ptr, arena_at(spec.saved_offset), spec.bytes) ~= 0 then
+            error("back-buffer restore verification failed: " .. spec.name)
+        end
+    end
+end, debug.traceback)
+
+-- Restore the render request last so only the original Premium buffers can be
+-- handed to the window renderer after the DFHack suspend lock is released.
+enabler.flag.render = saved_state.render
+
+if capture_ok and restore_ok then
+    local classic_screen = arena_at(classic_screen_offset)
+    local classic_top = arena_at(classic_top_offset)
+    for y = 0, map_height - 1 do
+        local row = {}
+        for x = 0, map_width - 1 do
+            local offset = (x * gps.dimy + y) * 8
+            local code = classic_screen[offset]
+            if rendered_top_in_use and classic_top[offset] ~= 0 then
+                code = classic_top[offset]
+            end
+            row[x + 1] = code
+        end
+        captured[y + 1] = row
+    end
+
+    -- The Premium character layer is the original screen snapshot, not the
+    -- temporary classic render. It contains interface text even though map
+    -- cells are represented by textures. Match DFHack screen-layer priority
+    -- when a top-layer character or texture occludes the base character.
+    local premium_screen = arena_at(saved_buffer_offsets.screen)
+    local premium_top_offset = saved_buffer_offsets.screen_top
+    local premium_top = premium_top_offset and arena_at(premium_top_offset)
+    for y = 0, gps.dimy - 1 do
+        local glyphs = {}
+        local any_text = false
+        for x = 0, gps.dimx - 1 do
+            local index = x * gps.dimy + y
+            local offset = index * 8
+            local code = premium_screen[offset]
+            if saved_state.top_in_use and premium_top
+                and (premium_top[offset] ~= 0
+                    or (gps.screentexpos_top
+                        and gps.screentexpos_top[index] ~= 0)) then
+                code = premium_top[offset]
+            end
+            if code ~= 0 and code ~= 32 then any_text = true end
+            glyphs[x + 1] = code_to_glyph(code)
+        end
+        if any_text then
+            ui_captured[y + 1] = table.concat(glyphs):gsub(" +$", "")
+        end
+    end
+end
+
+arena:delete()
+
+if not capture_ok then
+    qerror("classic render failed: " .. tostring(capture_err))
+end
+if not restore_ok then
+    qerror("graphics back-buffer restore failed: " .. tostring(restore_err))
+end
+
+local view = tostring(screen)
+local view_name = view:match("<([^:>]+)") or view
+print(("# DF %s | DFHack %s | %s"):format(
+    dfhack.getDFVersion(), dfhack.getDFHackVersion(), view_name))
+print(("# UI premium-character-layer | %dx%d | blank rows omitted; trailing spaces trimmed"):format(
+    gps.dimx, gps.dimy))
+print("# UI coordinates: U<y>|; x is the zero-based character offset after |")
+
+local ui_row_digits = math.max(2, #tostring(gps.dimy - 1))
+for y = 0, gps.dimy - 1 do
+    local row = ui_captured[y + 1]
+    if row then
+        print(("U%0" .. ui_row_digits .. "d|%s"):format(y, row))
+    end
+end
+
+print(("# MAP vanilla-classic | origin=(%d,%d,%d) | %dx%d"):format(
+    origin_x, origin_y, origin_z, map_width, map_height))
+print("# GLYPHS exact DF CP437 codes, displayed as Unicode equivalents")
+
+local row_digits = math.max(2, #tostring(map_height - 1))
+for y = 0, map_height - 1 do
+    local glyphs = {}
+    for x = 0, map_width - 1 do
+        glyphs[x + 1] = code_to_glyph(captured[y + 1][x + 1])
+    end
+    print(("M%0" .. row_digits .. "d|%s"):format(y, table.concat(glyphs)))
+end
+'
+
+strip_ansi() {
+    sed $'s/\033\\[[0-9;]*m//g'
+}
+
+if ! dfhack_output=$("$dfhack_runner" lua "$lua_program" 2>&1); then
+    printf '%s\n' "$dfhack_output" | strip_ansi >&2
+    printf '%s\n' 'df-ascii: could not read Dwarf Fortress; is DFHack running?' >&2
+    exit 1
+fi
+
+printf '%s\n' "$dfhack_output" | strip_ansi

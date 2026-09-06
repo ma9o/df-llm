@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "dwarf-fortress": {
+      "command": "/opt/homebrew/bin/python3",
+      "args": [
+        "/Users/ma9o/Desktop/df-llm/dfctl",
+        "--port",
+        "5001",
+        "--acknowledge",
+        "mcp"
+      ]
+    }
+  }
+}

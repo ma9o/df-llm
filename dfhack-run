@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""Native macOS replacement for dfhack-run.exe, using DFHack's localhost RPC."""
+import sys
+from dfharness.config import port_for_game
+from dfharness.rpc import DFHackError, run_command
+
+if len(sys.argv) < 2:
+    sys.exit("Usage: ./dfhack-run COMMAND [ARG ...]")
+try:
+    sys.stdout.write(run_command(*sys.argv[1:], port=port_for_game()))
+except (DFHackError, OSError, ValueError) as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(1)
