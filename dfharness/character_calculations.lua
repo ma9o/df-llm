@@ -126,8 +126,8 @@ function M.skill(nominal,s)
         if s.blood_timer>=2419200 then r=floor(r/2)
         elseif s.blood_timer>=1209600 then r=trunc(mul(r,3)/4) end
     end
-    local function need_penalty(counter,a,b,c)
-        if counter>=c then r=floor(r/2)
+    local function need_penalty(counter,a,b,highest)
+        if counter>=highest then r=floor(r/2)
         elseif counter>=b then r=trunc(mul(r,3)/4)
         elseif counter>=a then r=trunc(mul(r,9)/10) end
     end
@@ -302,12 +302,12 @@ function M.apply(u,out,h)
         r.gait={flags={layers_slow=g.flags.layers_slow,strength=g.flags.strength,agility=g.flags.agility}}
         for _,name in ipairs({'full_speed','start_speed','buildup_time','stealth_slows'}) do r.gait[name]=integer(g[name],0,2147483647) end
         r.gait_name=h.text(df.global.world.raws.creatures.action_strings[g.action_string_idx])
-        local function attr(id)
-            local a=u.body.physical_attrs[id]
+        local function attr(attribute_id)
+            local a=u.body.physical_attrs[attribute_id]
             local raw=i32(a.value-a.soft_demotion)
             local v=raw
             if u.uwss_att_change then
-                v=add(trunc(mul(v,u.uwss_att_change.phys_att_perc[id])/100),u.uwss_att_change.phys_att_add[id])
+                v=add(trunc(mul(v,u.uwss_att_change.phys_att_perc[attribute_id])/100),u.uwss_att_change.phys_att_add[attribute_id])
             end
             v=max(0,v)
             if (g.flags.strength or g.flags.agility) and not u.job.hunt_target and dfhack.units.isHidingCurse(u) then v=min(raw,v) end

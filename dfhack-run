@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Native macOS replacement for dfhack-run.exe, using DFHack's localhost RPC."""
+
 import sys
+
 from dfharness.config import port_for_game
 from dfharness.rpc import DFHackError, run_command
 

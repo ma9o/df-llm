@@ -1,8 +1,8 @@
 """A scripted bridge boundary for testing dispatch behavior without a game."""
 
+import json
 from collections import deque
 from copy import deepcopy
-import json
 
 from dfharness.rpc import DFHackError
 
@@ -29,7 +29,12 @@ class Bridge:
                 saved = self.dispatches[key]
                 if saved["signature"] != signature:
                     raise DFHackError("request_id reused with different arguments")
-                return {"duplicate": True, "action_id": key, "dispatch": deepcopy(saved.get("dispatch")), "view": deepcopy(self.view)}
+                return {
+                    "duplicate": True,
+                    "action_id": key,
+                    "dispatch": deepcopy(saved.get("dispatch")),
+                    "view": deepcopy(self.view),
+                }
             resume = request["action"].get("dispatch_id")
             if resume:
                 prior = self.dispatches[resume]
@@ -44,14 +49,22 @@ class Bridge:
             saved = {"signature": signature, "workflow": workflow, "last_action_id": last_action}
             self.dispatches[key] = saved
             self.active = key
-            return {"action_id": key, "workflow": deepcopy(workflow), "view": deepcopy(self.view), "last_action_id": last_action}
+            return {
+                "action_id": key,
+                "workflow": deepcopy(workflow),
+                "view": deepcopy(self.view),
+                "last_action_id": last_action,
+            }
         if op == "poll":
             if self.poll_hook:
                 value = self.poll_hook(self, request)
                 if value is not None:
                     return value
             record = self.dispatches.get(request.get("dispatch_id"), {})
-            return {"ready": self.view["status"].get("ready_for_input", True), "interrupted": record.get("interrupted", False)}
+            return {
+                "ready": self.view["status"].get("ready_for_input", True),
+                "interrupted": record.get("interrupted", False),
+            }
         if op == "observe":
             return deepcopy(self.view)
         if op == "act":
@@ -67,13 +80,15 @@ class Bridge:
             if isinstance(next_view, Exception):
                 raise next_view
             self.view = deepcopy(next_view)
-            self.view.setdefault("state_id", "state-"+str(len(self.inputs)))
+            self.view.setdefault("state_id", "state-" + str(len(self.inputs)))
             if self.input_hook:
                 self.input_hook(self, request)
             return {"action_id": request["request_id"]}
         if op == "finish_dispatch":
             saved = self.dispatches[request["action_id"]]
-            saved.update(workflow=deepcopy(request["workflow"]), dispatch=deepcopy(request["dispatch"]))
+            saved.update(
+                workflow=deepcopy(request["workflow"]), dispatch=deepcopy(request["dispatch"])
+            )
             self.active = None
             return {"recorded": True}
         if op == "interrupt":

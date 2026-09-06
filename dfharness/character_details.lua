@@ -1,6 +1,6 @@
 -- Character-owned profiles and capabilities. Only loaded by character queries.
 local u,out,h=...
-local array,text,read,list,fields,label=h.array,h.text,h.read,h.list,h.fields,h.label
+local array,text,read,list,label=h.array,h.text,h.read,h.list,h.label
 local function object() return require('json.internal'):newObject{} end
 local function missing(path,reason) h.unavailable(path,reason);return {available=false,reason=reason} end
 local budget={remaining=50000}
@@ -106,7 +106,7 @@ end
 local function named(kind,id,path)
     return h.named_reference(kind,id,path)
 end
-local function unit_ref(id,path)
+local function unit_ref(id,_path)
     local r={id=id}
     if id and id>=0 then
         local target=df.unit.find(id)

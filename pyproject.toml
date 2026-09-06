@@ -1,0 +1,91 @@
+[project]
+name = "df-llm"
+version = "0.6.1"
+description = "Supervised LLM play of Dwarf Fortress through DFHack"
+readme = "README.md"
+authors = [
+    { name = "ma9o" },
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+dfctl = "dfharness.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.6,<0.13"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.6,<0.17",
+    "ty>=0.0.78,<0.1",
+    "vulture>=2.14,<3",
+]
+
+[tool.uv.build-backend]
+module-name = "dfharness"
+module-root = ""
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["dfharness", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "BLE",    # flake8-blind-except
+    "C4",     # flake8-comprehensions
+    "DTZ",    # flake8-datetimez
+    "PERF",   # Perflint
+    "RET",    # flake8-return
+    "S324",   # insecure hash functions
+    "TID",    # flake8-tidy-imports
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+    "PTH",    # flake8-use-pathlib
+    "RUF",    # Ruff-specific rules
+]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "PERF401", # comprehension rewrites are often less clear in state-building code
+    "PERF403", # dict-comprehension rewrites are often less clear in state-building code
+    "RUF001",  # Unicode glyphs and prose are intentional
+    "RUF002",  # Unicode glyphs and prose are intentional
+    "RUF003",  # Unicode glyphs and prose are intentional
+    "SIM108",  # explicit branches are often clearer for protocol and policy code
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "ARG001", # test hooks intentionally mirror production callback signatures
+    "ARG002", # test doubles intentionally mirror production method signatures
+    "BLE001", # test server threads must relay every failure to the main test thread
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["dfharness", "tests"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+[tool.vulture]
+# Tests are deliberately excluded: test-only imports must not make production
+# definitions appear live. The two executable shims are real production roots.
+paths = ["dfharness", "dfctl", "dfhack-run"]
+min_confidence = 60
+sort_by_size = true
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+include = ["dfharness", "tests", "dfctl", "dfhack-run"]

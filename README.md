@@ -578,6 +578,29 @@ installations are found, this setting selects one. In the tested Windows build,
 saves live under the bottle's
 `drive_c/users/crossover/AppData/Roaming/Bay 12 Games/Dwarf Fortress/save`.
 
+## Development
+
+The development environment is pinned to Python 3.12 and managed by
+[uv](https://docs.astral.sh/uv/). Create or refresh it from the committed lockfile:
+
+```sh
+uv sync --locked
+```
+
+Install [Luacheck](https://github.com/lunarmodules/luacheck) and
+[ShellCheck](https://www.shellcheck.net/) with your system package manager, then run
+the same checks as CI:
+
+```sh
+make check
+```
+
+`make lint-fix` applies safe Ruff fixes and `make format` formats Python sources;
+`ty` provides a lightweight static type check. Vulture deliberately scans only
+the production package and executable shims—not `tests/`—so a definition
+referenced only by a test is still reported as dead code. Lua is checked against
+Lua 5.3 syntax with DFHack's injected globals declared in `.luacheckrc`.
+
 ## Validation and current limits
 
 `python3 -m unittest discover -s tests -v` runs 74 offline tests covering fragmented

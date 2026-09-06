@@ -2,12 +2,11 @@
 
 import json
 import os
-from pathlib import Path
 import socket
 import subprocess
+from pathlib import Path
 
 from .rpc import Connection, DFHackError
-
 
 WINE = Path("/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine")
 
@@ -16,20 +15,27 @@ def installations():
     if os.environ.get("DF_PATH"):
         return [Path(os.environ["DF_PATH"]).expanduser().resolve()]
     bottles = Path.home() / "Library/Application Support/CrossOver/Bottles"
-    roots = list(bottles.glob("*/drive_c/Program Files (x86)/Steam/steamapps/common/Dwarf Fortress"))
+    roots = list(
+        bottles.glob("*/drive_c/Program Files (x86)/Steam/steamapps/common/Dwarf Fortress")
+    )
     roots += list(bottles.glob("*/drive_c/Program Files/Steam/steamapps/common/Dwarf Fortress"))
-    roots += [Path.home() / p for p in (
-        ".local/share/Steam/steamapps/common/Dwarf Fortress",
-        ".steam/steam/steamapps/common/Dwarf Fortress",
-        "Library/Application Support/Steam/steamapps/common/Dwarf Fortress",
-    )]
+    roots += [
+        Path.home() / p
+        for p in (
+            ".local/share/Steam/steamapps/common/Dwarf Fortress",
+            ".steam/steam/steamapps/common/Dwarf Fortress",
+            "Library/Application Support/Steam/steamapps/common/Dwarf Fortress",
+        )
+    ]
     return sorted({p.resolve() for p in roots if p.is_dir()})
 
 
 def game_path():
     paths = installations()
     if len(paths) > 1:
-        raise DFHackError("Multiple installations found; set DF_PATH to the intended game directory")
+        raise DFHackError(
+            "Multiple installations found; set DF_PATH to the intended game directory"
+        )
     return paths[0] if paths else None
 
 
@@ -82,8 +88,12 @@ def configure(port=5001):
         temporary = target.with_suffix(".json.tmp")
         temporary.write_text(new_text)
         temporary.replace(target)
-    return {"config": str(target), "port": port, "allow_remote": False,
-            "note": "Restart DFHack if it was already running when the port changed."}
+    return {
+        "config": str(target),
+        "port": port,
+        "allow_remote": False,
+        "note": "Restart DFHack if it was already running when the port changed.",
+    }
 
 
 def launch(direct=False):
@@ -94,32 +104,47 @@ def launch(direct=False):
     command = [str(WINE), "--bottle", bottle, "--no-wait"]
     if direct:
         if not (path / "dfhooks_dfhack.ini").exists():
-            raise DFHackError("Launch DFHack through Steam once to install its hook before using --direct")
+            raise DFHackError(
+                "Launch DFHack through Steam once to install its hook before using --direct"
+            )
         command += ["--workdir", str(path), str(path / "Dwarf Fortress.exe")]
     else:
         command += ["--start", "steam://rungameid/2346660"]
     # A Wine child can retain pipes after its launcher exits. Do not wait on
     # captured stdout/stderr for a long-running GUI application.
-    subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     start_new_session=True)
-    return {"bottle": bottle, "requested": "DF executable" if direct else "DFHack via Steam",
-            "game_path": str(path), "next": "./dfctl status"}
+    subprocess.Popen(
+        command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+    )
+    return {
+        "bottle": bottle,
+        "requested": "DF executable" if direct else "DFHack via Steam",
+        "game_path": str(path),
+        "next": "./dfctl status",
+    }
 
 
 def doctor(explicit_port=None):
     path = game_path()
     port = port_for_game(explicit_port)
-    result = {"game_path": str(path) if path else None,
-              "crossover": WINE.exists(), "connection": probe(port)}
+    result = {
+        "game_path": str(path) if path else None,
+        "crossover": WINE.exists(),
+        "connection": probe(port),
+    }
     if path:
-        result["dfhack_installed"] = ((path / "hack").exists() or
-                                     (path.parent / "DFHack/hack").exists())
+        result["dfhack_installed"] = (path / "hack").exists() or (
+            path.parent / "DFHack/hack"
+        ).exists()
         save_roots = [path / "save", path / "data/save"]
         if "drive_c" in path.parts:
-            drive = Path(*path.parts[:path.parts.index("drive_c") + 1])
-            save_roots += list((drive / "users").glob("*/AppData/Roaming/Bay 12 Games/Dwarf Fortress/save"))
+            drive = Path(*path.parts[: path.parts.index("drive_c") + 1])
+            save_roots += list(
+                (drive / "users").glob("*/AppData/Roaming/Bay 12 Games/Dwarf Fortress/save")
+            )
         result["save_roots"] = [str(root) for root in save_roots if root.is_dir()]
-        result["saves"] = sorted({p.name for root in save_roots for p in root.glob("region*") if p.is_dir()})
+        result["saves"] = sorted(
+            {p.name for root in save_roots for p in root.glob("region*") if p.is_dir()}
+        )
     if not result["connection"]["dfhack"]:
         result["next"] = "./dfctl setup --port 5001; ./dfctl launch; ./dfctl status"
     return result

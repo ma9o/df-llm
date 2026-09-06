@@ -8,7 +8,7 @@ No Wine subprocess, protobuf compiler, or third-party package is required.
 import socket
 import struct
 import time
-
+from contextlib import suppress
 
 HEADER = struct.Struct("<h2xi")  # The two padding bytes are part of the protocol.
 HANDSHAKE = struct.Struct("<8si")
@@ -25,9 +25,11 @@ class DispatchError(DFHackError):
     def __init__(self, dispatch_id, cause):
         self.dispatch_id = dispatch_id
         self.resume_action = {"type": "resume", "dispatch_id": dispatch_id}
-        super().__init__(f"{cause}\nDispatch ID: {dispatch_id}. No input was retried. "
-                         "Observe/status before continuing; resume this ID if its checkpoint exists, "
-                         "or interrupt it before choosing a different action.")
+        super().__init__(
+            f"{cause}\nDispatch ID: {dispatch_id}. No input was retried. "
+            "Observe/status before continuing; resume this ID if its checkpoint exists, "
+            "or interrupt it before choosing a different action."
+        )
 
 
 class CommandError(DFHackError):
@@ -92,8 +94,10 @@ def fields(data):
 def notification_text(payload):
     return "".join(
         text.decode("utf-8", errors="replace")
-        for number, wire, fragment in fields(payload) if (number, wire) == (1, 2)
-        for field, kind, text in fields(fragment) if (field, kind) == (1, 2)
+        for number, wire, fragment in fields(payload)
+        if (number, wire) == (1, 2)
+        for field, kind, text in fields(fragment)
+        if (field, kind) == (1, 2)
     )
 
 
@@ -105,13 +109,16 @@ class Connection:
         self.sock = None
 
     def _recv(self, size, deadline):
+        sock = self.sock
+        if sock is None:
+            raise DFHackError("Connection is not open")
         chunks = bytearray()
         while len(chunks) < size:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("DFHack response deadline exceeded")
-            self.sock.settimeout(remaining)
-            chunk = self.sock.recv(size - len(chunks))
+            sock.settimeout(remaining)
+            chunk = sock.recv(size - len(chunks))
             if not chunk:
                 raise DFHackError("DFHack closed the connection mid-response")
             chunks.extend(chunk)
@@ -135,10 +142,8 @@ class Connection:
 
     def close(self):
         if self.sock is not None:
-            try:
+            with suppress(OSError):
                 self.sock.sendall(HEADER.pack(-4, 0))
-            except OSError:
-                pass
             self.sock.close()
             self.sock = None
 
@@ -146,14 +151,17 @@ class Connection:
         self.close()
 
     def run(self, command, *arguments):
+        sock = self.sock
+        if sock is None:
+            raise DFHackError("Connection is not open")
         payload = string_field(1, command) + b"".join(string_field(2, a) for a in arguments)
         if len(payload) > MAX_MESSAGE:
             raise ValueError("Command exceeds DFHack's message limit")
         deadline = time.monotonic() + self.timeout
         output, total = [], 0
         try:
-            self.sock.settimeout(self.timeout)
-            self.sock.sendall(HEADER.pack(1, len(payload)) + payload)
+            sock.settimeout(self.timeout)
+            sock.sendall(HEADER.pack(1, len(payload)) + payload)
             while True:
                 kind, size = HEADER.unpack(self._recv(HEADER.size, deadline))
                 if kind == -2:

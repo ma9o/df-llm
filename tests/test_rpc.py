@@ -1,9 +1,9 @@
-from contextlib import contextmanager
 import socket
 import threading
 import unittest
+from contextlib import contextmanager
 
-from dfharness.rpc import CommandError, Connection, DFHackError, HEADER, fields, run_command
+from dfharness.rpc import HEADER, CommandError, Connection, DFHackError, fields, run_command
 
 
 def receive(sock, size):
@@ -69,6 +69,7 @@ class RpcTests(unittest.TestCase):
             for byte in HEADER.pack(-3, len(notification)) + notification + HEADER.pack(-1, 0):
                 conn.sendall(bytes([byte]))
             self.assertEqual(receive(conn, 8), b"\xfc\xff\x00\x00\x00\x00\x00\x00")
+
         with server(handler) as port:
             self.assertEqual(run_command("lua", "print(42)", port=port, timeout=2), "é")
 
@@ -78,6 +79,7 @@ class RpcTests(unittest.TestCase):
             request(conn)
             conn.sendall(HEADER.pack(-2, 3))
             receive(conn, 8)
+
         with server(handler) as port:
             with self.assertRaises(CommandError) as caught:
                 run_command("missing-command", port=port, timeout=1)
@@ -88,10 +90,13 @@ class RpcTests(unittest.TestCase):
             receive(conn, 12)
             conn.sendall(b"HTTP/1.1 400")
             receive(conn, 8)
-        with server(handler) as port:
-            with self.assertRaisesRegex(DFHackError, "not a compatible"):
-                with Connection(port, timeout=1):
-                    self.fail("Handshake should fail")
+
+        with (
+            server(handler) as port,
+            self.assertRaisesRegex(DFHackError, "not a compatible"),
+            Connection(port, timeout=1),
+        ):
+            self.fail("Handshake should fail")
 
     def test_oversized_reply_is_rejected_before_allocating_body(self):
         def handler(conn):
@@ -99,26 +104,30 @@ class RpcTests(unittest.TestCase):
             request(conn)
             conn.sendall(HEADER.pack(-3, 64 * 1024 * 1024 + 1))
             receive(conn, 8)
-        with server(handler) as port:
-            with self.assertRaisesRegex(DFHackError, "Invalid RPC response header"):
-                run_command("help", port=port, timeout=1)
+
+        with (
+            server(handler) as port,
+            self.assertRaisesRegex(DFHackError, "Invalid RPC response header"),
+        ):
+            run_command("help", port=port, timeout=1)
 
     def test_disconnect_in_middle_of_frame(self):
         def handler(conn):
             handshake(conn)
             request(conn)
             conn.sendall(HEADER.pack(-3, 10) + b"\x0a")
-        with server(handler) as port:
-            with self.assertRaisesRegex(DFHackError, "mid-response"):
-                run_command("help", port=port, timeout=1)
+
+        with server(handler) as port, self.assertRaisesRegex(DFHackError, "mid-response"):
+            run_command("help", port=port, timeout=1)
 
     def test_bad_protobuf_lengths_and_unknown_fields(self):
         with self.assertRaisesRegex(DFHackError, "Truncated protobuf field"):
             list(fields(b"\x0a\x05ab"))
         with self.assertRaisesRegex(DFHackError, "Truncated protobuf varint"):
             list(fields(b"\x80"))
-        self.assertEqual(list(fields(b"\x10\x07\x1d\x01\x02\x03\x04")),
-                         [(2, 0, 7), (3, 5, b"\x01\x02\x03\x04")])
+        self.assertEqual(
+            list(fields(b"\x10\x07\x1d\x01\x02\x03\x04")), [(2, 0, 7), (3, 5, b"\x01\x02\x03\x04")]
+        )
 
 
 if __name__ == "__main__":
