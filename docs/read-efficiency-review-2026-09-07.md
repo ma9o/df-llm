@@ -1,8 +1,9 @@
 # Adventure read efficiency and DFHack reuse, 0.26.0
 
 This pass addresses the follow-up review after the eventful/strike work in
-0.25.0. Live checks were read-only while the human played. No combat, movement,
-save, reload or prompt-dismissal inputs were sent.
+0.25.0. Initial live checks were read-only while the human played. No combat,
+movement, save, reload or prompt-dismissal inputs were sent during that phase.
+A subsequent save/reload trial is recorded below.
 
 ## Controller reads
 
@@ -124,8 +125,8 @@ become resumable through this mechanism. Their limitations remain visible.
 Isolated Lua fixtures cover restart, older-save rewind, superseded continuations,
 pending-input rejection, exact JSON types, corrupt data, storage errors, bounded
 slots and lazy-memory retention. Native API presence and the read-only session
-index were checked live. **Live save/reload/resume has not yet been exercised**
-while the human is playing; this is the next integration check.
+index were checked live. **End-to-end live save/reload/resume remains unverified**; the follow-up trial
+below restored the index but stopped at its native state guard.
 
 The full character report remains schema 2 with 29 sections. Added classifications
 participate in its coverage. The existing cancelled-strike, native miss/refusal,
@@ -139,3 +140,21 @@ have been removed. CLI and Python share the same action discovery, execution,
 readers and metrics. Gameplay validation tests now exercise those supported
 boundaries directly. Historical metric rows remain readable. A persistent Python
 process amortizes tokenizer setup; each DFHack RPC still opens its own socket.
+
+## Follow-up live recovery trial
+
+After the human finished playing, the current campaign was saved as
+`checkpoint-campaign-20260907`. A two-stage sneaking sequence stopped after its
+first stage, without advancing game time. This exposed a checkpoint eligibility
+bug: DF retains inactive `unit_action_type.None` entries in the action vector.
+The reader now checks the native tags within a bound instead of requiring an
+empty vector, and never reads inactive union payloads. The extended native
+fixture suite passes 294 cases with zero fixture game inputs.
+
+The test state was saved separately as `checkpoint-recovery-20260907` and reloaded.
+Its dispatch index and fresh-stage candidate survived. The attempted resume was
+rejected before input because the saved guard did not match the reloaded native
+state. The cause is unresolved. Testing stopped at the user's request; successful
+end-to-end recovery is not claimed. The campaign checkpoint preserves the state
+before the test's sneak toggle. A final attempt to undo that toggle sent zero
+inputs because no active character health reading was available; it was not retried.

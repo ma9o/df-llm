@@ -51,7 +51,8 @@ local saving=modules.saving({array=array,text=text,bindings=bindings,
     input=function(key)gui.simulateInput(dfhack.gui.getCurViewscreen(true),key)end})
 local attack=modules.attack({array=array,bindings=bindings,copy=wire.clone,report_events=report_events})
 local input_registered=false
-local lifetime=modules.session(modules.checkpoints(wire))
+local checkpoints=modules.checkpoints(wire)
+local lifetime=modules.session(checkpoints)
 local session=lifetime.open()
 local pathing=modules.pathing({health=health,movement=movement,report_events=report_events,
     same=function(a,b)return not next(wire.delta(a,b))end,
@@ -736,7 +737,7 @@ local function observe(ui,s,pending_only)
         out.checkpoint_guard=optional(function()
             local u=dfhack.world.getAdventurer()
             local path=guard_cache[s].character and guard_cache[s].character.path
-            if u and #u.actions==0 and path and path.available and path.goal=='None' then
+            if checkpoints.idle(u,path) then
                 return input_guard(s,ui,guard_cache[s],true,true)
             end
         end)

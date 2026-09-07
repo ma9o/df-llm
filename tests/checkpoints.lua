@@ -22,6 +22,24 @@ local function record()
 end
 local tests={}
 local function test(name,fn)local ok,err=pcall(fn);assert(ok,name..': '..tostring(err));tests[#tests+1]=name end
+test('inactive native action slots permit checkpoints without reading inactive union payloads',function()
+    local function unit(types)
+        local actions=setmetatable({},{__len=function()return #types end})
+        for i,kind in ipairs(types)do
+            actions[i-1]=setmetatable({type=kind},{__index=function()error('Inactive payload read')end})
+        end
+        return {actions=actions}
+    end
+    local path={available=true,goal='None'}
+    assert(m.idle(unit({}),path))
+    assert(m.idle(unit({df.unit_action_type.None,df.unit_action_type.None}),path))
+    assert(not m.idle(unit({df.unit_action_type.Move}),path))
+    assert(not m.idle(unit({'None'}),path))
+    assert(not m.idle({},path))
+    assert(not m.idle(unit({}),{available=false,goal='None'}))
+    assert(not m.idle(unit({}),{available=true,goal='FollowUnit'}))
+    assert(not m.idle({actions=setmetatable({},{__len=function()return 513 end})},path))
+end)
 local saved,active_saved
 test('world store preserves exact JSON types and a verified fresh-stage checkpoint',function()
     local s=session();local r=record()

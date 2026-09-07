@@ -7,6 +7,21 @@ local wire=...
 local M={}
 local KEY='df-llm/session/v1/'
 local LIMIT,BYTES=128,131072
+function M.idle(unit,path)
+    local ok,value=pcall(function()
+        if not unit or not path or not path.available or path.goal~='None' then return false end
+        local none=df.unit_action_type.None
+        assert(type(none)=='number','Native inactive action tag is unavailable')
+        local actions=unit.actions
+        assert(#actions<=512,'Native action list exceeds checkpoint bound')
+        -- DF retains inactive slots after a turn. Only the native union tag
+        -- determines whether an entry represents queued work; never read its
+        -- inactive payload or require the vector itself to be empty.
+        for i=0,#actions-1 do if actions[i].type~=none then return false end end
+        return true
+    end)
+    return ok and value==true
+end
 local function decode(body,limit)
     assert(type(body)=='string' and #body<=limit,'Invalid or oversized saved checkpoint')
     -- getWorldData's default decoder does not preserve all JSON types. Store a

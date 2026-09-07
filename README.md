@@ -903,7 +903,8 @@ Older saves restore their own checkpoint, including superseded continuation IDs.
 Pending inputs and stages with mechanical progress retain diagnostics but cannot
 resume across reload; choice handles are always revoked. `resumable` in the index
 means a candidate requiring this state check. These recovery rules pass isolated
-save/reload fixtures; a live reload test is still pending while the human is playing.
+save/reload fixtures. Live reload restored the saved index, but resuming stopped
+at a native state mismatch; end-to-end recovery remains unverified.
 Storage failure preserves ordinary in-memory execution and is reported as
 `checkpoint_unavailable`. Resuming a saved candidate must first record that it
 has been superseded; failure at that point stops before game input.
