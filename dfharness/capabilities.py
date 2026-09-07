@@ -136,6 +136,7 @@ def capability_report(native):
         "observe": "Local ASCII terrain, visible units/items, health, needs, current native choices",
         "navigation": "Native current site/biome, travel coordinates, site grid and character-known rumors",
         "locate": "Explicit gui/adv-finder world-record lookup by historical figure or artifact ID",
+        "world_scan": "Search the whole bounded world site index by native type/subtype or name; one native snapshot, optional parallel filters outside the game",
         "unit": "Visible character inspection, native classifications and targetable anatomy; concise skips deep item reads",
         "dispatch_details": "Read saved outcomes, events, prompts and execution traces",
         "session": "Save-scoped dispatch index; explicit fresh-stage resume with matching native state, no pending-input replay",

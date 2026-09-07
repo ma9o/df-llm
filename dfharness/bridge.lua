@@ -1127,6 +1127,9 @@ local function dispatch()
         return {status=s,state_id=state_id(s,ui),navigation=navigation_info(s,true)}
     elseif req.op=='locate' then
         return geography.locate(req.kind,req.id)
+    elseif req.op=='world_sites' then
+        check(req.catalog==nil or type(req.catalog)=='boolean','catalog must be boolean')
+        return modules.world_scan({array=array,text=text}).snapshot(session.world_epoch,req.catalog)
     elseif req.op=='session' then
         return lifetime.describe(session,integer(req.limit or 20,1,128,'limit'))
     elseif req.op=='character_status' or req.op=='character_brief' then

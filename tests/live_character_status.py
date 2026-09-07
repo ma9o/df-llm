@@ -40,6 +40,7 @@ def native_fixtures(port):
         ("fastcombat.lua", "fastcombat.lua"),
         ("environment.lua", "environment.lua"),
         ("geography.lua", "geography.lua"),
+        ("world_scan.lua", "world_scan.lua"),
         ("movement.lua", "movement.lua"),
         ("pathing.lua", "pathing.lua"),
         ("input_guard.lua", "input_guard.lua"),

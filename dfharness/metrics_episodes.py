@@ -18,6 +18,7 @@ READS = {
     "items",
     "navigation",
     "locate",
+    "world_scan",
     "session",
     "inspect",
     "dispatch_details",

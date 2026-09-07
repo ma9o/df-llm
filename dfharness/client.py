@@ -213,6 +213,24 @@ class Client:
         return self.request({"op": "locate", "kind": kind, "id": id})
 
     @measured
+    def world_scan(self, tokens=None, *, match="any", limit=20, workers=1, catalog=False):
+        from .world_scan import search, validate
+
+        if type(catalog) is not bool:
+            raise ValueError("catalog must be boolean")
+        if catalog:
+            if tokens:
+                raise ValueError("Choose a token catalog or a search, not both")
+            snapshot = self.request({"op": "world_sites", "catalog": True})
+            return {
+                k: v for k, v in snapshot.items() if k not in ("sites", "errors", "error_count")
+            }
+        tokens = [tokens] if isinstance(tokens, str) else tokens
+        tokens = validate(tokens, match, limit, workers)
+        snapshot = self.request({"op": "world_sites"})
+        return search(snapshot, tokens, match, limit, workers)
+
+    @measured
     def character_status(self):
         return self.request({"op": "character_status"})
 

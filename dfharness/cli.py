@@ -209,6 +209,24 @@ def parser():
     )
     locate.add_argument("kind", choices=["figure", "artifact"])
     locate.add_argument("id", type=int)
+    scan = subs.add_parser(
+        "world-scan", help="Find world sites by native type/subtype token or name"
+    )
+    scan.add_argument("tokens", nargs="*", help="One or more literal search terms")
+    scan.add_argument("--match", choices=["any", "type", "name"], default="any")
+    scan.add_argument("--limit", type=int, default=20, help="Maximum matches per term, 1..100")
+    scan.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Parallel snapshot filters, 1..8; one is fastest for small worlds",
+    )
+    scan.add_argument(
+        "--tokens",
+        dest="catalog",
+        action="store_true",
+        help="List the running game's native site/subtype tokens",
+    )
     keys.add_argument("filter", nargs="?", default="")
     inspect = subs.add_parser("inspect", help="Read a world tile and the items/creatures on it")
     for coord in ("x", "y", "z"):
@@ -643,6 +661,14 @@ def execute(args, client=None):
                 result = client.session(args.limit)
             elif args.command == "locate":
                 result = client.locate(args.kind, args.id)
+            elif args.command == "world-scan":
+                result = client.world_scan(
+                    args.tokens,
+                    match=args.match,
+                    limit=args.limit,
+                    workers=args.workers,
+                    catalog=args.catalog,
+                )
             elif args.command == "character-status":
                 result = client.character_status()
             elif args.command in ("observe", "look"):

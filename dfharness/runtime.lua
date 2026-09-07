@@ -194,6 +194,8 @@ local requirements={
     unit_enumeration={'dfhack.units.getUnitsInBox','dfhack.maps.getTileSize'},
     geography={'dfhack.world.getCurrentSite','dfhack.maps.getTileBiomeRgn','dfhack.maps.getRegionBiome',
         'dfhack.maps.getBiomeType'},
+    world_scan={{path='df.global.world.world_data.sites',type='vector'},
+        'dfhack.translation.translateName'},
     persistence={'dfhack.persistent.saveWorldData','dfhack.persistent.getWorldData'},
     strike={'df.unit_action_type.Attack',{path='df.unit.find',type='function'},'df.interface_key.QUICK_ATTACK','df.interface_key.HEAVY_ATTACK',
         'df.interface_key.WILD_ATTACK','df.interface_key.PRECISE_ATTACK','df.interface_key.CHARGE_ATTACK',

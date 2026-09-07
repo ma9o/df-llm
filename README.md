@@ -715,7 +715,38 @@ establish that drinkable water is present.
 `gui/adv-finder` readers without opening its GUI. Results contain plain IDs and
 coordinates, with an explicit world-record scope; they do not replace the
 character-known rumor list or imply current visibility.
-For the current lair, it also exposes the native site's entrance in absolute
+
+`world-scan` searches the world's entire site index by native type/subtype token
+or a literal substring of its translated/native name:
+
+```sh
+./dfctl world-scan LAIR CAVE --match type --limit 5
+./dfctl world-scan TOWER VAULT --match type --workers 4
+./dfctl world-scan 'Meandering Prophecy' --match name
+./dfctl world-scan --tokens
+```
+
+The Python equivalent is `Client().world_scan(["LAIR", "CAVE"], match="type")`.
+The default `--match any` matches either an exact type/subtype or a name substring;
+use `--match type` for just the native classification. Types ignore case and
+separators; original tokens such as `LAIR`, `CITY`, `CAVE_DETAILED`, and `TREE_CITY`
+are accepted alongside the exposed enum names. `--tokens` discovers the running
+game's enum catalog, including future additions.
+
+One read-only DFHack call copies at most 32,768 site records; optional workers
+filter disjoint parts of that snapshot in separate Python processes. No worker
+accesses the game. DFHack serializes native access, so parallel game calls would
+queue. One worker is the default because process startup costs more than this
+world's filtering. Results include IDs, names, types, surface travel coordinates,
+and total match counts. They are ordered by distance to each site's bounding-box
+center when a local adventurer is loaded, otherwise by ID. Coordinates identify
+site centers, not entrances or verified routes. `--limit` bounds results per term
+(default 20, maximum 100); scan truncation, result truncation, and unreadable
+records remain explicit. This is a world-record search, including locations
+unknown to the character; it does not scan biomes or local tiles. See the
+[world-scan measurements](docs/world-scan.md).
+
+For the current lair, `navigation` also exposes the native site's entrance in absolute
 coordinates and, when loaded, local coordinates with visibility. This is labelled
 `source=native_site_metadata`; absent entrance records and failed reads differ.
 Rumors identify leads, not verified present enemies. The controller chooses the
