@@ -290,13 +290,20 @@ def verify_walk(pending, view):
 
 
 def next_walk(view, target, constraints, arrival_radius=0, *, context=None):
+    from .pathing import next_native_walk
+
     start = view["status"].get("position")
-    if start == target:
-        return result("completed", "Reached the requested tile.")
+    if (
+        start
+        and start["z"] == target["z"]
+        and max(abs(start[k] - target[k]) for k in ("x", "y")) <= arrival_radius
+    ):
+        return result("completed", "Reached the requested distance from the target.")
+    native = next_native_walk(view, target, constraints, arrival_radius, context)
+    if native is not None:
+        return native
     if not start or start["z"] != target["z"]:
         return result("needs_input", "Local walking supports the current z-level only.")
-    if max(abs(start[k] - target[k]) for k in ("x", "y")) <= arrival_radius:
-        return result("completed", "Reached the requested distance from the target.")
     m = view.get("map")
     if not m or "walkable" not in m:
         return result("needs_input", "No local walkability data is available.")
@@ -868,7 +875,13 @@ def next_step(workflow, view):
             "All requested item/location postconditions are verified.",
             {"value": item_value(action, view, ctx.get("item_before"))}
             if kind != "walk_to"
-            else None,
+            else {
+                "value": {
+                    "kind": "walk_to",
+                    "adapter": ctx.get("walk_adapter", "observed_route"),
+                    "position": view["status"].get("position"),
+                }
+            },
         )
     task = tasks[index]
     if task["kind"] == "walk_to":
@@ -906,7 +919,7 @@ def next_step(workflow, view):
                 return close_menu(view)
             if not view["status"].get("can_move"):
                 return result("needs_input", "Pickup approach requires the default adventure view.")
-            return next_walk(view, destination, {})
+            return next_walk(view, destination, {}, context=ctx)
     elif task["item_id"] not in inventory(view):
         return result("needs_input", "The requested inventory item is no longer carried.")
     if task["kind"] == "stow" and task["container_id"] not in inventory(view):

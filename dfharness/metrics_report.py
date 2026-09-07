@@ -219,7 +219,7 @@ def report(paths, baseline=None, run=None, idle_gap=120):
             "measurement_ms": "Serialization and token counting, including a cold tokenizer load; excludes JSONL append. Reported separately from response duration.",
             "rpc": "Lua source and returned command text bytes, excluding protobuf framing. Every Client.request RPC is recorded, including readiness polls and transport errors. No token counts for internal traffic.",
             "p95": "Nearest-rank percentile. Null counts are unmeasured, never zero. Process termination can leave RPC traces without a completed interaction.",
-            "episodes": "Explicit (run, episode) labels span idle gaps; unlabeled calls split per run after idle_gap_seconds. One controller per run. Wall time covers first recorded start to last measured finish only; it excludes unseen instruction delivery, final deliberation and process startup.",
+            "episodes": "All calls split per run after idle_gap_seconds or a label change. Explicit labels retain a segment number across splits; idle time between segments is excluded. One controller per run. Wall time covers first recorded start to last measured finish only; it excludes unseen instruction delivery, final deliberation and process startup.",
             "gap_ms": "Time outside all recorded harness intervals, including human pauses, deliberation, other tools and scheduling; not measured LLM thinking. Harness time unions overlapping calls, includes tokenizer measurement work and excludes the final JSONL append. RPC durations are children, never added again. Legacy finish times are inferred.",
             "followup_reads": "Observation calls starting after a dispatch response and before the next dispatch. Trailing reads are separate because the window is still open; overlapping dispatch windows are excluded. Receipt and read output tokens are shown together. A read can be intentional, not necessarily a deficient receipt.",
             "bounces": "Proxy: a non-completed targeted action is later reissued with the same action type and native target in its episode, including inside a sequence. Resumes and same-dispatch redeliveries are separate. Rate uses assessable non-completed calls with a later dispatch; missing targets, overlapping calls and open tails are counted separately. Targets/sequence blockers are unavailable in legacy records. Matching targets does not prove a prerequisite defect.",
@@ -258,7 +258,7 @@ def render(result):
         reads = episode["followup_reads"]["reads_per_dispatch"]
         bounce = episode["bounces"]
         label = (
-            episode["episode"]
+            f"{episode['episode']}#{episode['segment']}"
             if episode["grouping"] == "explicit"
             else "auto:" + episode["episode"][:8]
         )

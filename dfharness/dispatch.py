@@ -149,6 +149,10 @@ def run_dispatch(
     # A resume retains history but starts a new controller decision. Reports
     # already returned by the previous dispatch must not interrupt it again.
     interruption_cursor = max(events, default=cursor)
+    # Native goal watchers retain the instant that paused a command, including
+    # transient changes that have vanished by the next RPC. Consume it once;
+    # explicit resume is a new controller decision, just like the event cursor.
+    consumed_native_watch = workflow.get("consumed_native_watch")
     receipt_cursor = workflow.get("reported_event_cursor", cursor)
     summary: dict[str, Any] = {
         "id": root_id,
@@ -271,6 +275,8 @@ def run_dispatch(
         if value_stage >= 0:
             workflow["reported_value_stage"] = value_stage
         workflow["reported_event_cursor"] = max(events, default=cursor)
+        if consumed_native_watch is not None:
+            workflow["consumed_native_watch"] = consumed_native_watch
         workflow["reported_reply_ids"] = sorted(
             set(seen_replies) | speech_result(summary, seen_replies)[1]
         )
@@ -352,6 +358,14 @@ def run_dispatch(
         if state.get("action_error"):
             return finish("failed", "Input may have partially executed: " + state["action_error"])
         collect(observed)
+        native_watch = (observed.get("input_evidence") or {}).get("watch_view")
+        native_watch_id = needed.get("input_evidence_for")
+        if native_watch and native_watch_id and native_watch_id != consumed_native_watch:
+            consumed_native_watch = native_watch_id
+            workflow["consumed_native_watch"] = native_watch_id
+            stopped = interruption(before, native_watch, native_watch.get("reports", []), policy)
+            if stopped:
+                return finish(**stopped)
         stopped = interruption(
             before, observed, (e for e in events.values() if e["id"] > interruption_cursor), policy
         )
@@ -477,7 +491,12 @@ def run_dispatch(
         workflow["prompts"] = summary["prompts"]
         child_id = str(uuid.uuid4())
         if decision.get("capture"):
-            active_workflow(workflow).setdefault("context", {})["input_evidence_for"] = child_id
+            evidence_key = (
+                "path_evidence_for"
+                if decision["capture"]["kind"] == "walk"
+                else "input_evidence_for"
+            )
+            active_workflow(workflow).setdefault("context", {})[evidence_key] = child_id
         previous_input = {
             "action_id": child_id,
             "action": decision["input"],
@@ -505,6 +524,14 @@ def run_dispatch(
                     "parent_dispatch": root_id,
                     "ui_mode": read_args["ui_mode"],
                     **({"capture": decision["capture"]} if decision.get("capture") else {}),
+                    **(
+                        {
+                            "path_execution": policy,
+                            "path_timeout_ms": max(1, (deadline - time.monotonic()) * 1000),
+                        }
+                        if decision["input"]["type"] == "path_to"
+                        else {}
+                    ),
                     **watch_options(policy),
                     **({"watch_expect": view["watched_units"]} if "watched_units" in view else {}),
                     **saved.request(workflow),

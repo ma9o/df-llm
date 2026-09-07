@@ -28,6 +28,10 @@ class FakeGame:
         self.calls.append({"unit": kwargs})
         return {"available": True}
 
+    def observe(self, **kwargs):
+        self.calls.append({"observe": kwargs})
+        return {"format": "choice_observation"}
+
     def brief(self):
         self.calls.append("brief")
         return {"format": "character_brief"}
@@ -64,6 +68,11 @@ class McpTests(unittest.TestCase):
         self.assertFalse(result["result"]["isError"])
         self.assertEqual(self.game.calls, [{"navigation_limit": 5}])
         self.assertTrue(self.call("df_navigation", {"limit": 101})["result"]["isError"])
+
+    def test_choices_view_is_not_replaced_with_a_full_scene_query(self):
+        result = self.call("df_observe", {"view": "choices"})
+        self.assertFalse(result["result"]["isError"])
+        self.assertEqual(self.game.calls, [{"observe": {"view": "choices"}}])
 
     def test_settings_brief_and_unit_are_exposed_without_raw_lua(self):
         for name, args in (

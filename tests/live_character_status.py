@@ -37,6 +37,7 @@ def native_fixtures(port):
         ("reports.lua", "reports.lua"),
         ("environment.lua", "environment.lua"),
         ("movement.lua", "movement.lua"),
+        ("pathing.lua", "pathing.lua"),
         ("input_guard.lua", "input_guard.lua"),
         ("interactions.lua", "interactions.lua"),
         ("character_reader.lua", "character.lua"),

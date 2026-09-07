@@ -317,7 +317,8 @@ class StrikeTests(unittest.TestCase):
         b.view["status"]["position"] = {"x": 9, "y": 9, "z": 0}
         resumed = c.act(r["resume"], result_format="compact")
         self.assertEqual(resumed["outcome"], "completed")
-        self.assertNotIn("values", resumed)
+        self.assertEqual([value["kind"] for value in resumed["values"]], ["walk_to"])
+        self.assertEqual(resumed["values"][0]["stage"], 1)
         self.assertEqual(len(b.inputs), 1)
 
     def test_strike_contract_requires_explicit_style_and_native_attack_identity(self):

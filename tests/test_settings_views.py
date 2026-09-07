@@ -9,7 +9,7 @@ from unittest.mock import patch
 from dfharness.cli import main
 from dfharness.client import Client
 from dfharness.settings import read_settings, write_settings
-from dfharness.views import character_brief, concise_observation, unit_brief
+from dfharness.views import character_brief, concise_observation, landmark_rows, unit_brief
 from tests.support import Bridge
 from tests.test_workflows import scene
 
@@ -174,12 +174,96 @@ class SettingsViewTests(unittest.TestCase):
             "choices": [],
         }
         concise = concise_observation(view)
-        self.assertEqual(concise["reports_omitted"], 8)
+        self.assertEqual(concise["reports_omitted"], 16)
         self.assertEqual(concise["conversation"]["options"]["option"][0]["id"], "native-id")
         self.assertNotIn("visible", concise["conversation"]["options"]["option"][0])
         self.assertEqual(concise["status"]["modal"], view["status"]["modal"])
         self.assertNotIn("walkable", concise["map"])
         self.assertIn("walkable", view["map"])
+
+    def test_scene_keeps_held_targets_burden_and_needs_without_repeating_inventory(self):
+        view = scene("ready")
+        view["adventurer"] = {
+            "health": {"blood_count": 0, "wounds": 2},
+            "needs": {"thirst": {"severity": 1, "label": "Thirsty"}},
+            "burden": {"available": True, "label": "Overburdened", "compared_weight_kg": 95},
+            "inventory": [
+                {"id": 1, "description": "hammer", "mode": "Weapon", "body_part_id": 8},
+                {"id": 2, "description": "backpack", "mode": "Worn"},
+            ],
+            "inventory_truncated": False,
+        }
+        result = concise_observation(view)
+        player = result["adventurer"]
+        self.assertEqual(
+            player["held_items"], [{"id": 1, "description": "hammer", "body_part_id": 8}]
+        )
+        self.assertEqual(player["inventory_count"], 2)
+        self.assertEqual(player["burden"]["label"], "Overburdened")
+        self.assertEqual(player["health"]["blood_count"], 0)
+        self.assertEqual(player["needs"]["thirst"]["label"], "Thirsty")
+        self.assertNotIn("inventory", player)
+        client = Client(port=1)
+        with patch.object(client, "request", return_value=view) as request:
+            client.observe()
+        self.assertEqual(request.call_args.args[0]["scope"], "scene")
+        self.assertTrue(request.call_args.args[0]["receipt_state"])
+
+    def test_landmark_spans_preserve_holes_levels_and_terrain_types(self):
+        tiles = [
+            {
+                "shape": shape,
+                "type": shape + "T",
+                "material": "stone",
+                "position": {"x": x, "y": y, "z": z},
+            }
+            for shape, x, y, z in (
+                ("RAMP", 0, 1, 2),
+                ("RAMP", 1, 1, 2),
+                ("RAMP", 3, 1, 2),
+                ("RAMP", 0, 1, 3),
+                ("STAIR", 0, 2, 2),
+            )
+        ]
+        spans = landmark_rows(tiles)
+        restored = [
+            {
+                "shape": group["shape"],
+                "type": group["type"],
+                "material": group["material"],
+                "position": {"x": x, "y": y, "z": group["z"]},
+            }
+            for group in spans
+            for y, first, last in group["rows"]
+            for x in range(first, last + 1)
+        ]
+        self.assertEqual(restored, tiles)
+        self.assertEqual(landmark_rows([{"position": None}]), [{"position": None}])
+
+    def test_compact_attribute_and_skill_maps_preserve_zero_and_unknown_effective_values(self):
+        value = character_brief(
+            {
+                "available": True,
+                "character": {
+                    "attributes": {
+                        "physical": [
+                            {"name": "STRENGTH", "value": 0, "effective": 0},
+                            {"name": "AGILITY", "value": 20},
+                        ]
+                    },
+                    "skills": [
+                        {
+                            "name": "HAMMER",
+                            "effective": 0,
+                            "experience": 0,
+                            "next_level_xp_threshold": 500,
+                        }
+                    ],
+                },
+            }
+        )["character"]
+        self.assertEqual(value["attributes"]["physical"], {"STRENGTH": 0, "AGILITY": {"value": 20}})
+        self.assertEqual(value["skills"]["HAMMER"], {"effective": 0, "xp": [0, 500]})
 
     def test_dispatch_observes_full_internal_state_even_with_concise_saved_view(self):
         c = Client(port=1)

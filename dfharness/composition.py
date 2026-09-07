@@ -139,8 +139,11 @@ def observation_args(workflow):
     ctx = leaf.get("context", {})
     if leaf["action"]["type"] == "strike":
         args["strike_state"] = True
-    if ctx.get("input_evidence_for"):
-        args["input_evidence_for"] = ctx["input_evidence_for"]
+    if leaf["action"]["type"] in item_actions | LOCAL_TARGET_ACTIONS | {"talk", "combat", "strike"}:
+        args["native_path_state"] = True
+    evidence = ctx.get("input_evidence_for") or ctx.get("path_evidence_for")
+    if evidence:
+        args["input_evidence_for"] = evidence
     if leaf["action"]["type"] in LOCAL_TARGET_ACTIONS:
         anchor = ctx.get("target_absolute", ctx.get("stairs_source"))
         if anchor is None and (origin := workflow.get("context", {}).get("map_origin")):

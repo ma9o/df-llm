@@ -16,6 +16,7 @@ local env=setmetatable({df={unit={find=function(id)finds=finds+1;return units[id
         isHidden=function(u)return u.hidden==true end}}},{__index=_ENV})
 local wire=assert(load(wire_source))()
 local m=assert(load(source,'health-fixture','t',env))({array=function()return require('json.internal'):newArray{}end,
+    text=function(v)return v end,
     same=function(a,b)return not next(wire.delta(a,b))end})
 local names={}
 local function test(name,fn)
@@ -80,6 +81,35 @@ test('failed condition fields remain unavailable instead of plausible healthy de
     assert(r.available and not r.complete and r.blood_max==100)
     assert(r.blood_count==nil and r.conscious==nil and r.wounds==nil and r.prone==nil)
     assert(r.unavailable.blood_count and r.unavailable.conscious and r.unavailable.wounds)
+end)
+test('combat condition preserves disabled limbs, native damage and grapple identities',function()
+    env.df.wrestle_state_type={[0]='LatchedOn',[1]='Grab'}
+    local u={alive=true,dead=false,flags1={on_ground=true},body={blood_count=0,blood_max=100,wounds=vector({}),
+        body_plan={body_parts=vector({{name_singular=vector({'left leg'})},{name_singular=vector({'right leg'})}})},
+        components={body_part_status=vector({{bone_damage=true},{bone_damage=false}})}},
+        counters={unconscious=0,pain=0},counters2={exhaustion=0},
+        status2={limbs_stand_count=0,limbs_stand_max=2,limbs_grasp_count=2,limbs_grasp_max=2,limbs_fly_count=0,limbs_fly_max=0},
+        status={wrestle_items=vector({{unit=0,self_bp=1,other_bp=0,state=1,advantage=-1,item1=-1,item2=-1}})}}
+    local r=m.combat_condition(u)
+    assert(r.complete and r.functional_limbs.stand[1]==0 and r.functional_limbs.stand[2]==2)
+    assert(#r.parts_with_status==1 and r.parts_with_status[1].id==0 and r.parts_with_status[1].flags[1]=='bone_damage')
+    assert(r.grapples[1].unit_id==0 and r.grapples[1].advantage==-1 and r.grapples[1].state=='Grab')
+    u.body.components.body_part_status=vector({})
+    r=m.combat_condition(u)
+    assert(not r.complete and r.unavailable.parts_with_status and r.parts_with_status==nil)
+    assert(r.functional_limbs.stand[1]==0 and #r.grapples==1)
+end)
+test('combat details are bounded and omitted anatomy is never complete',function()
+    local parts,statuses,grapples={},{},{}
+    for i=1,18 do
+        parts[i]={name_singular=vector({'part'})};statuses[i]={missing=true}
+        grapples[i]={unit=i,self_bp=0,other_bp=0,state=0,advantage=1,item1=-1,item2=-1}
+    end
+    local r=m.combat_condition({body={body_plan={body_parts=vector(parts)},
+        components={body_part_status=vector(statuses)}},status={wrestle_items=vector(grapples)}})
+    assert(not r.complete and #r.parts_with_status==16 and r.parts_omitted==2)
+    assert(#r.grapples==16 and r.grapples_omitted==2)
+    assert(r.unavailable.functional_limbs and r.functional_limbs==nil)
 end)
 test('player progress preserves zero without touching inventory or wound identities',function()
     local forbidden=setmetatable({},{__index=function()error('Unrequested player detail read')end})

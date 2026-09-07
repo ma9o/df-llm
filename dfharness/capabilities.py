@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 
-from .policy import MAX_WATCHED_UNITS, UNIT_HEALTH_FLAGS
+from .policy import MAX_DISPATCH_INPUTS, MAX_WATCHED_UNITS, UNIT_HEALTH_FLAGS
 from .routing import MAX_VISITED
 from .rpc import POLL_MAX_SECONDS, POLL_MIN_SECONDS
 
@@ -22,7 +22,11 @@ GROUPS = (
         ("core", "inventory", "consumption"),
         "Portion, native report and need effect verified",
     ),
-    (("walk_to", "use_stairs"), ("core", "local_map"), "Requested position verified"),
+    (
+        ("walk_to", "use_stairs"),
+        ("core", "local_map"),
+        "Requested position verified; walk_to uses native path goals when native_path dependencies are present and no explicit route constraints were supplied",
+    ),
     (
         ("empty_container",),
         ("core", "inventory", "emptying"),
@@ -78,7 +82,7 @@ GROUPS = (
     (
         ("strike",),
         ("core", "local_map", "combat", "strike"),
-        "One explicit aimed melee attempt and recovery with resulting target condition; phase completion is not guaranteed damage",
+        "One explicit aimed melee attempt and recovery; resulting target blood, consciousness, functional limbs, part damage and grapples are bounded native reads; phase completion is not guaranteed damage",
     ),
     (
         ("sequence",),
@@ -109,7 +113,7 @@ def capability_report(native):
             group["partial"] = True
         result["actions"].append(group)
     result["limits"] = {
-        "inputs_per_dispatch": 64,
+        "inputs_per_dispatch": MAX_DISPATCH_INPUTS,
         "seconds_per_dispatch": 300,
         "sequence_stages": 128,
         "retained_dispatches": 128,

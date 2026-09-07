@@ -6,13 +6,14 @@ from .policy import MAX_DISPATCH_INPUTS, MAX_WATCHED_UNITS, UNIT_HEALTH_FLAGS
 from .workflows import SEMANTIC
 
 ACTION_HELP = {
+    "walk_to": "Submit a native path goal and verify the requested position or arrival_radius. DF computes the route. Step/complete, interruption and resume share the dispatch policy. Explicit tile/depth/occupancy constraints retain the constrained route adapter.",
     "drop": "Drop the specified item, removing it first if worn. Container contents stay inside. Returns location, contents integrity, cached load and burden from unit state.",
     "stow": "Place the item in container_id, removing it first if worn. Returns destination, contents integrity, cached load and burden from unit state.",
     "equip": "Wear item_id; only replace listed item IDs and apply the requested disposition. Returns equipment location and resulting load.",
     "wield": "Hold item_id as a weapon; replacements and their disposition must be explicit. Returns equipment location and resulting load.",
     "pickup": "Approach and acquire item_id with its contents. Returns location, contents integrity and resulting load.",
     "remove": "Remove item_id into a hand. Returns location and resulting load; does not select other equipment to discard.",
-    "strike": "Attempt one aimed melee strike using the chosen body_part_id, item_id, attack_index and style. Native attempt/recovery verification is separate from damage. Returns target condition. Obtain body-part IDs with unit; weapon attack indices with item.",
+    "strike": "Attempt one aimed melee strike using the chosen body_part_id, item_id, attack_index and style. Native attempt/recovery verification is separate from damage. Returns target blood, consciousness, functional limbs, damaged parts and grapples with coverage bounds. Obtain body-part IDs with unit; weapon attack indices with item.",
     "combat": "Open the target's native combat choices. This is discovery/navigation; use strike to execute a complete aimed attack.",
     "sequence": "Execute explicit semantic actions in order under one completion policy, interruption policy and budget. Resume preserves completed stages. Item prerequisites are handled inside their stages.",
     "converse": "Visit explicit unit_ids, ask explicit topics and collect replies. A topic may include tact and subject_hf_id. Return only when completed or an undelegated choice is needed.",

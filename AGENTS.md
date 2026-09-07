@@ -85,7 +85,10 @@ own rules and refusals as facts to report rather than rules to reimplement.
   missing, implement the required DFHack extension within the authorized task,
   integrate it, and verify it. A migration list is not delivery of requested
   work. Mark any still-unverifiable behavior unsupported. A repository-shipped
-  DFHack Lua helper must identify its own calculation provenance. Read-only clones
+  DFHack helper must use DFHack APIs and named df-structures fields, be suitable
+  for an upstream contribution, and identify its calculation provenance. It must
+  never depend on executable offsets, binary signatures, per-executable models
+  or version gates; provenance notes do not make those supportable. Read-only clones
   of dfhack, df-structures and scripts pinned to the installed release live under `.df-llm/upstream/`;
   consult those before reading the executable or an unpinned copy.
 - Reuse DFHack's calculations and tools instead of reconstructing the game's:
@@ -151,8 +154,10 @@ following are retired, treat them as legacy and do not extend them:
   working DFHack calculation helpers. `computeMovementSpeed` is still a stub
   in the pinned `53.16-r1.1` reference and needs upstream repair;
   `computeSlowdownFactor` does not supply burden or carrying capacity.
-- `routing.py` step-by-step BFS and route extension; replace with game pathing
-  where the UI offers it and DFHack reachability queries for verification.
+- `routing.py` step-by-step BFS and route extension remain only for explicit
+  route constraints/frontier exploration or unavailable native path dependencies.
+  Ordinary local movement and approaches use the game's native path command.
+  Do not silently discard supplied constraints to remove this remaining adapter.
 - The `.df-llm/*.asm` listings and every offset cited in docs; they are
   evidence of past verification, not a support basis.
 - The options-screen geometry adapter for saving; use DFHack `quicksave` and a
@@ -222,7 +227,9 @@ Remove this section when the list is empty.
   Logging/tokenizer failures must not change actions or trigger retries. Tokenizer
   downloads require explicit preparation, never an ordinary controller call.
 - Evaluate whole instructions using explicit episode labels or documented idle
-  grouping. Report harness time and gaps separately; gaps also include human
+  grouping. Split explicit labels at idle gaps too, retaining the label and a
+  segment identity so development pauses do not inflate active play time.
+  Report harness time and gaps separately; gaps also include human
   pauses and other tools, so they are not proven LLM deliberation.
 - Pair receipt token counts with follow-up reads per dispatch. Smaller receipts
   are not an improvement if the controller needs extra queries to reassess.

@@ -37,6 +37,71 @@ function M.condition(unit)
     out.complete=out.unavailable==nil
     return out
 end
+function M.combat_condition(unit)
+    local out=M.condition(unit)
+    local function read(name,fn)
+        local ok,value=pcall(fn)
+        if ok then out[name]=value
+        else
+            out.unavailable=out.unavailable or {}
+            out.unavailable[name]=tostring(value):sub(1,180)
+        end
+    end
+    local function count(value)
+        assert(type(value)=='number' and value>=0 and value%1==0,'Invalid native limb count')
+        return value
+    end
+    read('functional_limbs',function()
+        local limbs={}
+        for _,kind in ipairs({'stand','grasp','fly'})do
+            limbs[kind]={count(unit.status2['limbs_'..kind..'_count']),count(unit.status2['limbs_'..kind..'_max'])}
+        end
+        return limbs
+    end)
+    read('parts_with_status',function()
+        local parts=unit.body.body_plan.body_parts
+        local statuses=unit.body.components.body_part_status
+        assert(#parts<=512 and #statuses==#parts,'Native anatomy is oversized or inconsistent')
+        local result=h.array()
+        local total=0
+        for id=0,#parts-1 do
+            local flags=h.array()
+            for name,value in pairs(statuses[id])do
+                if type(name)=='string' and value==true then flags[#flags+1]=name end
+            end
+            if #flags>0 then
+                total=total+1
+                if #result<16 then
+                    table.sort(flags)
+                    local name=assert(parts[id].name_singular[0],'Native body-part name is absent')
+                    result[#result+1]={id=id,name=h.text(name),flags=flags}
+                end
+            end
+        end
+        if total>#result then out.parts_omitted=total-#result end
+        return result
+    end)
+    read('grapples',function()
+        local list=unit.status.wrestle_items
+        local result=h.array()
+        for i=0,math.min(#list,16)-1 do
+            local grip=list[i]
+            local state=df.wrestle_state_type[grip.state]
+            assert(type(state)=='string','Unknown native wrestle state')
+            for _,name in ipairs({'unit','self_bp','other_bp','item1','item2','advantage'})do
+                local value=grip[name]
+                assert(type(value)=='number' and value%1==0,'Invalid native grapple field: '..name)
+            end
+            result[#result+1]={unit_id=grip.unit,self_body_part_id=grip.self_bp,
+                other_body_part_id=grip.other_bp,state=state,advantage=grip.advantage,
+                item_id=grip.item1,other_item_id=grip.item2}
+        end
+        if #list>#result then out.grapples_omitted=#list-#result end
+        return result
+    end)
+    out.complete=out.unavailable==nil and not out.parts_omitted and not out.grapples_omitted
+    return out
+end
 local function integer(v)
     assert(type(v)=='number' and v==math.floor(v) and v>=0 and v<=2147483647,
         'Native health value is not a nonnegative integer')

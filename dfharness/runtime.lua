@@ -118,6 +118,10 @@ local requirements={
         'dfhack.maps.getTileFlags','dfhack.maps.getTileType','dfhack.maps.getWalkableGroup',
         'dfhack.units.isVisible','dfhack.units.isHidden','df.interface_key.A_MOVE_N',
         'df.interface_key.A_MOVE_S','df.interface_key.A_MOVE_E','df.interface_key.A_MOVE_W'},
+    native_path={'dfhack.units.setPathGoal','dfhack.maps.canWalkBetween','dfhack.maps.isTileVisible',
+        {path='df.adventure_movement_pathst.new',type='function'},
+        'df.unit_path_goal.AdventureAutomove','df.unit_path_goal.None',
+        'df.dungeon_control_state.CONTINUE','df.dungeon_control_state.PROMPT','df.interface_key.A_SHORT_WAIT'},
     inventory={'dfhack.items.getContainedItems','df.global.game.main_interface.adventure.inventory.open',
         'df.global.game.main_interface.adventure.inventory.option_current',
         'df.global.game.main_interface.adventure.inventory.scroll_position','df.interface_key.A_INV_DROP',
@@ -214,7 +218,11 @@ function M.capabilities()
         if #missing>0 then out.features[name].missing=missing end
         if #invalid>0 then out.features[name].invalid=invalid end
     end
-    out.adapters={inventory=h.bindings.support(),conversation={
+    out.adapters={native_path={method='native_movement_command',
+        dependencies_present=out.features.native_path.dependencies_present,
+        completion='DF computes/follows the path; arrival verified, controller watch changes pause for shared policy evaluation',
+        limitation='Visible reachable endpoints on the loaded map; arrival radii and semantic approaches share this adapter. Explicit route constraints retain the observed-route adapter. Cancellation stops future path steps; a native Move already submitted may settle.'},
+        inventory=h.bindings.support(),conversation={
         method=h.bindings.conversation_supported({kind='conversation'}) and 'native_hotkey' or 'ascii_ordered_labels',
         indexing='Native option indices for target and tact pickers; native title-line offsets for topics',
         tacts={dependencies_present=out.features.conversation_tacts.dependencies_present,

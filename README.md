@@ -49,8 +49,12 @@ whole predicate object. Partial execution updates preserve other settings.
 MCP `df_settings` and `Client.settings(update=...)` use the same file.
 
 Prefer the short CLI/MCP operations in routine play. `look` is
-`observe --view concise`: ASCII terrain, visible units, current choices, compact
-equipment, and the latest 12 reports, with explicit omission metadata. Decoded
+`observe --view concise`: ASCII terrain, visible units, current choices, held
+items, inventory count, burden, and the latest four relevant reports, with
+explicit omission metadata. It skips the full native inventory reader.
+Terrain landmarks use exact inclusive `[y, x_first, x_last]` spans grouped by
+z-level, shape and material. `brief` retains equipment, needs and skill XP;
+`status` retains the comprehensive character contract. Decoded
 menus return native choices; unclassified interface states retain UI text.
 `observe --view choices` reads only the current menu or prompt, without the
 inventory, terrain or report history. The same view is available through Python
@@ -722,9 +726,24 @@ Unimplemented combat modes and unknown builds remain explicitly limited; verifie
 bindings use an isolated ASCII adapter where available. A dependency symbol's
 presence alone does not establish compatible behavior on a newer executable.
 
-Local walking uses the observed walkability map and replans after each verified
-step. `allow_occupied` defaults to false, so walking avoids stepping onto units;
-the controller can explicitly override it. `max_liquid_depth` defaults to 7
+Local walking submits the game's `adventure_movement_pathst` command and lets
+DF compute and follow its `AdventureAutomove` goal. The same executor approaches
+item, conversation, combat and environmental targets. It verifies arrival from
+unit position and pauses when controller-requested watch data changes; the
+shared policy decides whether to interrupt or continue. One path command counts
+as one input, regardless of its tile count. Incremental mode stops after the
+first movement boundary; resume retains the original destination. Interruption
+cancels the remaining owned goal with `dfhack.units.setPathGoal`; an already
+submitted native Move may finish. No unit position, action timer or pathfinding
+cache is edited. Reachability uses `canWalkBetween`; stale native caches can
+produce an explicit no-connection blocker and are never forcibly refreshed.
+
+The native command has no excluded-tile, depth or occupancy constraint fields.
+Supplying `allow_occupied`, `max_liquid_depth`, `blocked_tiles` or `extend_route`
+explicitly retains the existing observed-route adapter. CLI defaults omit these
+fields; `--no-allow-occupied` explicitly prohibits occupied route tiles.
+For this constrained adapter, `allow_occupied` defaults to false,
+`max_liquid_depth` defaults to 7
 (no liquid-depth exclusion), and `blocked_tiles` defaults to an empty list.
 These are route constraints, not a threat classifier. A blocked destination
 returns its coordinates, exclusion reasons, and occupying creatures. Walking
@@ -744,10 +763,18 @@ tiles, measured horizontally on the target z-level. Zero requires the exact
 tile; a positive radius permits arrival at an observed traversable neighbor.
 For example, `walk-to 70 40 136 --extend-route --arrival-radius 2` reveals the
 route and stops within two tiles. Unknown depth is never assumed to be dry.
-Automatic routing across ramps or between levels remains unsupported.
-Pickup uses the same local walker
-with its default route constraints. For a custom approach, dispatch `walk_to`
+The native goal can name another loaded z-level when DFHack reports a walkable
+connection; the constrained adapter remains on one level. Flat-ground native
+movement, radius arrival, interruption and resume have been verified live.
+Pickup uses the same native walker. For a constrained pickup approach, dispatch `walk_to`
 first, then perform the item action from its tile.
+
+Travel still uses native directional moves and the existing site-grid adapter.
+The old `travel_goal_*` names are not evidence of a route-goal API: the pinned
+structures name them `long_action_duration` and `travel_start_*`, describing the
+first move and map offloading. They are not written as a waypoint. See the
+[pathing review](docs/pathing-review-2026-09-07.md) for verified interfaces and
+the remaining constraints.
 
 Material or maker species does not prove fit. `fit.wearable_now` stays `unknown`
 until an observed native Wear menu establishes current eligibility; the equip
@@ -968,12 +995,13 @@ episode boundaries, coverage and comparison limits.
 
 ## Connect an LLM
 
-Run `./dfctl mcp` as an MCP stdio server. It exposes sixteen controller tools:
+Run `./dfctl mcp` as an MCP stdio server. It exposes seventeen controller tools:
 
 | Tool | Purpose |
 |---|---|
 | `df_settings` | Read/save controller execution and output preferences |
 | `df_capabilities` | Probe runtime dependencies, verified adapters and remaining semantic coverage |
+| `df_actions` | Shared semantic action schemas and concise local reference |
 | `df_brief` | Explicit character projection for routine condition checks |
 | `df_unit` | Visible character inspection by ID |
 | `df_observe` | Concise ASCII terrain, creatures, native choices, recent reports |
@@ -992,16 +1020,19 @@ Run `./dfctl mcp` as an MCP stdio server. It exposes sixteen controller tools:
 `./dfctl mcp --dev-tools` additionally exposes `df_keys`, raw `key`, `click`,
 `click_text`, `text` and `select_unit` actions, full observations and full action
 traces. CLI and Python retain these development operations. Normal MCP fixes
-observations to concise and receipts to compact even if the shared profile asks
+observations to concise or explicit choices and receipts to compact even if the shared profile asks
 for full output. Explicit read-only `df_dispatch_details` remains available in
 normal MCP. It also exposes native choice handles and undelegated choices. This separates interface mechanics from controller decisions without
 changing completion, acknowledgement or interruption policy.
 
 [mcp.example.json](mcp.example.json) contains the configuration for this Mac, for
 clients that use the `mcpServers` JSON format. Other clients need the same command
-and arguments entered in their MCP settings. This file has **not** been installed
-into any LLM application's settings. The example enables acknowledgements as a
-controller default; completion mode remains selectable per dispatch. No API key
+and arguments entered in their MCP settings. This project also has a Codex
+[MCP configuration](.codex/config.toml), recognized by `codex mcp get dwarf-fortress`.
+An already-running controller must reload its session/client to discover newly
+configured tools. The server's initialize, tools/list and choices observation
+have been verified over stdio. Persistent controller settings own execution
+defaults; the server command does not override them. No API key
 or model provider is required by the harness itself.
 
 Example `df_act` arguments to delegate the remaining steps of the current action:

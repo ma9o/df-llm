@@ -18,7 +18,8 @@ clients. `path` defaults to `metrics.jsonl` beside the controller settings file;
 relative saved paths resolve there. `run` names a controller session/comparison
 cohort. `episode` identifies one instruction within that run. Use a unique label
 per instruction, within one game/world, and a separate run for each controller.
-Explicit labels group across idle gaps. Clear the label using
+Explicit labels retain their names but split into numbered segments at idle gaps
+or intervening label changes. Clear the label using
 `{"measurement":{"episode":null}}` for inferred episodes.
 
 | Setting | Process override | Python constructor |
@@ -96,11 +97,13 @@ offline reports and CLI parse errors do not create interaction records.
 ./dfctl metrics .df-llm/current.jsonl --baseline .df-llm/baseline.jsonl --text
 ```
 
-Without an explicit episode label, a gap of more than `--idle-gap` seconds
-between measured intervals starts an episode within that run. Default: 120
-seconds. Explicit labels override that heuristic; a long deliberation can split
-an unlabeled instruction, and several short instructions can merge. Historical
-timestamps cannot reconstruct the user's original instruction identity.
+A gap of more than `--idle-gap` seconds between measured intervals starts a new
+episode segment within that run, including calls with an explicit label. Default:
+120 seconds. A label change also starts a segment. Reports preserve explicit labels
+and number their segments, so reusing a label after development does not charge
+the pause to active play. Long deliberation can also split an instruction; gaps
+are a documented heuristic, not measured thinking time. Several short unlabeled
+instructions can merge. Historical timestamps cannot reconstruct instruction identity.
 
 The wall interval spans the first recorded start through the last measured
 finish. Harness time is the union of measured intervals, so overlapping calls

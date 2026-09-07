@@ -241,6 +241,9 @@ class Client:
             request["ui_mode"] = "native"
         if view == "choices":
             request["scope"] = "choices"
+        elif view == "concise":
+            request["scope"] = "scene"
+            request["receipt_state"] = True
         request["radius"] = radius
         if center is not None:
             request["center"] = center

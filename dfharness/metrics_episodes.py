@@ -204,6 +204,7 @@ def summarize_episode(key, calls):
         "run": key[0],
         "grouping": key[1],
         "episode": key[2],
+        "segment": key[3],
         "started_at": calls[0]["at"],
         "calls": len(calls),
         "dispatch_count": len(dispatches),
@@ -235,21 +236,25 @@ def episodes(rows, idle_gap=120):
         [row for row in rows if interval(row) is not None],
         key=lambda row: (interval(row)[0], row["id"]),
     )
-    groups, pending = {}, {}
+    groups, pending, segments = {}, {}, Counter()
     for row in timed:
         run, label = row["run"], row.get("episode")
         start, end = interval(row)
-        if label:
-            key = (run, "explicit", label)
-            pending.pop(run, None)
+        grouping = "explicit" if label else "idle_gap"
+        previous = pending.get(run)
+        same_label = (
+            previous is not None
+            and previous[0][1] == grouping
+            and (not label or previous[0][2] == label)
+        )
+        if same_label and start - previous[1] <= idle_gap * 1000:
+            key = previous[0]
+            end = max(end, previous[1])
         else:
-            previous = pending.get(run)
-            if previous is None or start - previous[1] > idle_gap * 1000:
-                key = (run, "idle_gap", row["id"])
-            else:
-                key = previous[0]
-                end = max(end, previous[1])
-            pending[run] = (key, end)
+            identity = (run, grouping, label or row["id"])
+            segments[identity] += 1
+            key = (*identity, segments[identity])
+        pending[run] = (key, end)
         groups.setdefault(key, []).append(row)
     items = [summarize_episode(key, calls) for key, calls in groups.items()]
     windows = sum(item["followup_reads"]["between_dispatches"] for item in items)

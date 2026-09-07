@@ -38,7 +38,7 @@ local screen_reader=modules.screen({array=array,glyph=glyph})
 local read_reports=modules.reports({array=array,text=text})
 local environment=modules.environment({array=array})
 local movement=modules.movement({array=array,text=text,bindings=bindings})
-local health=modules.health({array=array,same=function(a,b)return not next(wire.delta(a,b))end})
+local health=modules.health({array=array,text=text,same=function(a,b)return not next(wire.delta(a,b))end})
 local burden=modules.burden()
 local progress_reader=modules.progress({array=array,health=health,movement=movement,reports=read_reports})
 local item_reader=modules.items({array=array})
@@ -49,6 +49,9 @@ local attack=modules.attack({array=array,bindings=bindings,copy=wire.clone})
 local input_registered=false
 local lifetime=modules.session()
 local session=lifetime.open()
+local pathing=modules.pathing({health=health,movement=movement,
+    same=function(a,b)return not next(wire.delta(a,b))end,
+    input=function(key)gui.simulateInput(dfhack.gui.getCurViewscreen(true),key)end})
 
 local copy=wire.clone
 
@@ -523,6 +526,7 @@ native_guard=function(s,ui)
             exhaustion=u.counters2.exhaustion,hunger=u.counters2.hunger_timer,
             thirst=u.counters2.thirst_timer,sleep=u.counters2.sleepiness_timer,inventory=array()}
         out.character.movement=movement.character(u)
+        out.character.path=pathing.state()
         local seen={};local remaining=4096
         local function item_guard(item,depth)
             if seen[item.id] or remaining<=0 or depth>16 then out.complete=false;return {id=item.id,truncated=true} end
@@ -549,7 +553,7 @@ native_guard=function(s,ui)
     return out
 end
 
-local function character_base(u,full,brief)
+local function character_base(u,full,brief,scene)
     if not u then return nil end
     local out=unit_info(u)
     out.on_ground=u.flags1.on_ground
@@ -568,6 +572,17 @@ local function character_base(u,full,brief)
         sleepiness_timer=optional(function() return u.counters2.sleepiness_timer end),
     }
     end
+    if scene then
+        out.inventory_count=#u.inventory;out.held_items=array()
+        for i,entry in ipairs(u.inventory)do
+            if i>=120 then out.inventory_truncated=true;break end
+            if df.inv_item_role_type[entry.mode]=='Weapon' then
+                out.held_items[#out.held_items+1]={id=entry.item.id,
+                    description=text(dfhack.items.getDescription(entry.item,0,true)),body_part_id=entry.body_part_id}
+            end
+        end
+        return out
+    end
     local budget={remaining=full and 4096 or 300,max_depth=full and 16 or 4,include_hidden=full,brief=brief}
     out.inventory=array()
     for _,entry in ipairs(u.inventory) do
@@ -580,7 +595,7 @@ local function character_base(u,full,brief)
     return out
 end
 
-local function adventurer_info(full) return character_base(dfhack.world.getAdventurer(),full) end
+local function adventurer_info(full) return character_base(dfhack.world.getAdventurer(),full,nil,req.scope=='scene') end
 
 local function tile_info(x,y,z)
     local d,o=dfhack.maps.getTileFlags(x,y,z)
@@ -701,6 +716,7 @@ local function observe(ui,s,pending_only)
         input_guard={schema=2,native_complete=guard_cache[s].complete}}
     if req.watch_units then out.watched_units=health.read(req.watch_units,s.mode=='adventure' and s.map_loaded) end
     if req.strike_state then out.strike_state=attack.state() end
+    if req.native_path_state then out.native_path=pathing.state()end
     if req.input_evidence_for then
         local receipt=session.receipts[req.input_evidence_for]
         local evidence=receipt and receipt.evidence
@@ -740,7 +756,7 @@ local function observe(ui,s,pending_only)
             local unconscious=optional(function()return target.counters.unconscious end)
             if type(unconscious)=='number' then out.target_unit.health={unconscious=unconscious}
             else out.target_unit.health_unavailable='Native unconsciousness counter is unavailable' end
-            if req.strike_state then out.target_unit.condition=health.condition(target)end
+            if req.strike_state then out.target_unit.condition=health.combat_condition(target)end
         end
         out.adventurer=adventurer_info()
         if req.receipt_state then out.adventurer.burden=burden.read(dfhack.world.getAdventurer()).burden end
@@ -762,7 +778,7 @@ local function observe(ui,s,pending_only)
                         if i.contents then mark(i.contents)end
                     end
                 end
-                mark(out.adventurer.inventory)
+                if out.adventurer.inventory then mark(out.adventurer.inventory)end
             end
         end
         if req.map ~= false then out.map=map_view(s,out.target_unit) end
@@ -847,7 +863,10 @@ local function act()
     local key=a.key
     local scroll_menu,scroll_option
     local native_menu,native_option
-    if a.type=='move' or a.type=='wait' then
+    if a.type=='path_to' then
+        check(s.can_move,'Native pathing requires the local adventure input view')
+        check(req.parent_dispatch and req.capture and req.capture.kind=='walk','Native pathing requires a semantic dispatch')
+    elseif a.type=='move' or a.type=='wait' then
         check(s.mode=='adventure' and s.screen=='viewscreen_dungeonmodest', 'Movement requires an active local adventure')
         check(s.can_move, 'Close the current menu before moving or waiting')
         if a.type=='move' then
@@ -960,7 +979,9 @@ local function act()
     if key then check(df.interface_key[key]~=nil,'Unknown interface_key: '..tostring(key)) end
     local evidence
     if req.capture then
-        local ok,value=pcall(attack.prepare,req.capture,native_menu,native_option)
+        local ok,value
+        if a.type=='path_to' then ok,value=pcall(pathing.prepare,a,req)
+        else ok,value=pcall(attack.prepare,req.capture,native_menu,native_option)end
         if not ok then error({message=tostring(value),code='capture_unavailable',input_sent=false,
             details={view=observe(ui,s)}},0) end
         evidence=value
@@ -987,7 +1008,9 @@ local function act()
     session.serial=session.serial+1
     input_registered=true
     local ok,err=xpcall(function()
-        if native_menu then
+        if a.type=='path_to' then
+            pathing.start(evidence,a,req,session,receipt)
+        elseif native_menu then
             -- Probe native scroll bounds, then resolve the input from fresh
             -- native options. Topic offsets are lines; uniform lists use indices.
             receipt.ui_adjustment=bindings.prepare(native_menu,native_option)
@@ -1016,10 +1039,11 @@ local function act()
                 gui.simulateInput(dfhack.gui.getCurViewscreen(true),('STRING_A%03d'):format(a.text:byte(i)))
             end
         end
-        if evidence then attack.submitted(evidence,session,receipt,req.request_id) end
+        if evidence and evidence.kind=='strike' then attack.submitted(evidence,session,receipt,req.request_id) end
     end,debug.traceback)
     receipt.error=not ok and tostring(err) or nil
-    if s.travel and s.travel.active and key and key:match('^A_MOVE_') then
+    if a.type=='path_to' and ok then -- The native path watcher owns settlement.
+    elseif s.travel and s.travel.active and key and key:match('^A_MOVE_') then
         -- Overland input advances up to three travel tiles asynchronously while
         -- player_control_state remains TAKING_INPUT. UI frames alone are not a
         -- completion signal. Require an unchanged native travel state for a
@@ -1066,6 +1090,7 @@ local function dispatch()
         end
         check(type(unit_reader)=='function','Unit reader was not supplied by this client')
         out.unit=unit_reader(u,character_base(u,true),{array=array,text=text})
+        out.unit.condition=health.combat_condition(u)
         out.available=true;return out
     elseif req.op=='navigation' then
         local ui=ui_rows();local s=status(ui)

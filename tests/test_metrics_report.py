@@ -75,7 +75,7 @@ class EpisodeTests(unittest.TestCase):
         self.assertEqual(window["receipt_output_tokens"]["o200k_base"]["known_total"], 300)
         self.assertEqual(window["read_output_tokens"]["o200k_base"]["known_total"], 350)
 
-    def test_explicit_labels_cross_idle_gaps_and_runs_do_not_mix(self):
+    def test_explicit_labels_split_on_idle_gaps_and_runs_do_not_mix(self):
         rows = [
             sample("a", 0, episode="fight"),
             sample("b", 999_000, episode="fight"),
@@ -84,11 +84,37 @@ class EpisodeTests(unittest.TestCase):
             read("e", 130_000),
         ]
         result = episodes(list(reversed(rows)), idle_gap=60)
-        self.assertEqual(result["count"], 4)
-        fight = result["items"][0]
-        self.assertEqual(fight["calls"], 2)
-        self.assertEqual(fight["wall_ms"], 1_000_000)
-        self.assertEqual(fight["grouping"], "explicit")
+        self.assertEqual(result["count"], 5)
+        fights = [
+            item for item in result["items"] if item["run"] == "test" and item["episode"] == "fight"
+        ]
+        self.assertEqual([item["segment"] for item in fights], [1, 2])
+        self.assertEqual([item["calls"] for item in fights], [1, 1])
+        self.assertEqual([item["wall_ms"] for item in fights], [1000, 1000])
+        self.assertEqual([item["gap_ms"] for item in fights], [0, 0])
+        self.assertTrue(all(item["grouping"] == "explicit" for item in fights))
+
+    def test_idle_split_prevents_false_bounces_and_followup_reads(self):
+        rows = [
+            sample("blocked", 0, outcome="needs_input", episode="fight"),
+            read("after-development", 180_000, episode="fight"),
+            sample("new-attempt", 181_000, episode="fight"),
+        ]
+        result = episodes(rows)
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["bounces"]["reissued"], 0)
+        self.assertEqual(result["followup_reads"]["trailing_reads"], 0)
+        self.assertEqual(result["totals"]["gap_ms"], 900)
+
+    def test_explicit_idle_boundary_uses_end_of_all_overlapping_calls(self):
+        rows = [
+            sample("long", 0, duration=180_000, episode="fight"),
+            read("poll", 1000, episode="fight"),
+            sample("boundary", 240_000, episode="fight"),
+            sample("split", 301_001, episode="fight"),
+        ]
+        result = episodes(rows, idle_gap=60)
+        self.assertEqual([item["calls"] for item in result["items"]], [3, 1])
 
     def test_overlap_and_tokenizer_work_are_not_counted_twice_or_called_deliberation(self):
         rows = [

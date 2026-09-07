@@ -112,7 +112,7 @@ TOOLS = [
     ),
     tool(
         "df_observe",
-        "Read an ASCII map, health/inventory, visible creatures, native choices and recent reports with speaker/activity IDs. "
+        "Read an ASCII map, health, needs, burden, held items, visible creatures, native choices and recent reports with speaker/activity IDs. "
         "Coordinates are zero-based. Map origin + column/row gives local map coordinates. Routine output is concise; view=choices reads only current decisions. Undecoded decisions retain UI text.",
         obj(
             {
@@ -344,7 +344,7 @@ class Server:
                 name = definition["name"]
                 if not self.development:
                     if name == "df_observe":
-                        arguments["view"] = "concise"
+                        arguments.setdefault("view", "concise")
                     elif name == "df_act":
                         arguments["result_format"] = "compact"
                 if name == "df_keys":

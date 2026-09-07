@@ -82,7 +82,7 @@ def parser():
         "--idle-gap",
         type=float,
         default=120,
-        help="Split unlabeled episodes after this many idle seconds (default 120)",
+        help="Split every episode label after this many idle seconds (default 120)",
     )
     metrics.add_argument(
         "--prepare-tokenizer",
@@ -401,14 +401,18 @@ def parser():
     for name in ("x", "y", "z"):
         actions["walk-to"].add_argument(name, type=int)
     actions["walk-to"].add_argument(
-        "--allow-occupied", action="store_true", help="Allow routes through occupied tiles"
+        "--allow-occupied",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow routes through occupied tiles",
     )
-    actions["walk-to"].add_argument("--max-liquid-depth", type=int, default=7)
-    actions["walk-to"].add_argument("--blocked-tiles", type=json.loads, default=[])
+    actions["walk-to"].add_argument("--max-liquid-depth", type=int)
+    actions["walk-to"].add_argument("--blocked-tiles", type=json.loads)
     actions["walk-to"].add_argument("--arrival-radius", type=int, default=0)
     actions["walk-to"].add_argument(
         "--extend-route",
         action="store_true",
+        default=None,
         help="Reveal the route by advancing through observed tiles",
     )
     for name in (
@@ -422,10 +426,12 @@ def parser():
         "fill-container",
         "drink-from",
     ):
-        actions[name].add_argument("--allow-occupied", action="store_true")
-        actions[name].add_argument("--max-liquid-depth", type=int, default=7)
-        actions[name].add_argument("--blocked-tiles", type=json.loads, default=[])
-        actions[name].add_argument("--extend-route", action="store_true")
+        actions[name].add_argument(
+            "--allow-occupied", action=argparse.BooleanOptionalAction, default=None
+        )
+        actions[name].add_argument("--max-liquid-depth", type=int)
+        actions[name].add_argument("--blocked-tiles", type=json.loads)
+        actions[name].add_argument("--extend-route", action="store_true", default=None)
     actions["select-option"] = subs.add_parser(
         "select-option", help="Select a currently visible structured menu option"
     )

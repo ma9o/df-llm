@@ -45,6 +45,36 @@ def reading_item(item):
     return out
 
 
+def inventory_item(item):
+    """Inventory context already supplies location; definitions stay in item/status."""
+    out = reading_item(item)
+    for key in ("location", "quality", "wear"):
+        out.pop(key, None)
+    return out
+
+
+def landmark_rows(landmarks):
+    """Exact inclusive x spans per y/z, with terrain identity written once."""
+    groups = {}
+    for tile in landmarks:
+        position = tile.get("position") or {}
+        if not all(type(position.get(k)) is int for k in ("x", "y", "z")):
+            # Preserve malformed/unknown readings, never manufacture coordinates.
+            return deepcopy(landmarks)
+        identity = (*(tile.get(k) for k in ("shape", "type", "material")), position["z"])
+        groups.setdefault(identity, set()).add((position["y"], position["x"]))
+    out = []
+    for identity, cells in groups.items():
+        rows = []
+        for y, x in sorted(cells):
+            if rows and rows[-1][0] == y and rows[-1][2] + 1 == x:
+                rows[-1][2] = x
+            else:
+                rows.append([y, x, x])
+        out.append(dict(zip(("shape", "type", "material", "z"), identity, strict=True), rows=rows))
+    return out
+
+
 def reading_menu(menu, focus=None):
     out = pick(
         menu,
@@ -187,7 +217,6 @@ def concise_observation(view, event_detail="task", force_types=()):
         view,
         (
             "state_id",
-            "effect_id",
             "status",
             "conversation",
             "combat",
@@ -202,7 +231,7 @@ def concise_observation(view, event_detail="task", force_types=()):
     out.update(
         format="concise_observation",
         projection=True,
-        omitted="Item definitions, nested inventory, coating quantities/temperatures, walkability grids and raw UI coordinates; use observe(view='full').",
+        omitted="Inventory: brief/status. Full terrain records, report history and raw UI: observe(view='full'). Landmark rows are [y,x_first,x_last], inclusive.",
     )
     out["status"] = reading_status(view.get("status", {}))
     if view.get("adventurer") is not None:
@@ -221,7 +250,20 @@ def concise_observation(view, event_detail="task", force_types=()):
                 "inventory_truncated",
             ),
         )
-        out["adventurer"]["inventory"] = [reading_item(i) for i in player.get("inventory", [])]
+        if "inventory_count" in player:
+            out["adventurer"].update(pick(player, ("inventory_count", "held_items")))
+        elif "inventory" in player:
+            out["adventurer"]["inventory_count"] = len(player["inventory"])
+            out["adventurer"]["held_items"] = [
+                pick(item, ("id", "description", "body_part_id"))
+                for item in player["inventory"]
+                if item.get("mode") == "Weapon"
+            ]
+        if "burden" in player:
+            out["adventurer"]["burden"] = pick(
+                player["burden"],
+                ("available", "reason", "label", "compared_weight_kg", "thresholds"),
+            )
     if "nearby_items" in view:
         out["nearby_items"] = [reading_item(i) for i in view["nearby_items"]]
     if view.get("map"):
@@ -238,7 +280,6 @@ def concise_observation(view, event_detail="task", force_types=()):
                 "units_available",
                 "units_unavailable",
                 "routing_window",
-                "landmarks",
                 "legend",
                 "visibility",
                 "buildings",
@@ -248,6 +289,11 @@ def concise_observation(view, event_detail="task", force_types=()):
                 "feature_distance_from",
             ),
         )
+        if "landmarks" in view["map"]:
+            out["map"]["landmarks"] = landmark_rows(view["map"]["landmarks"])
+        if "legend" in out["map"] and "rows" in out["map"]:
+            symbols = set("".join(out["map"]["rows"]))
+            out["map"]["legend"] = {k: v for k, v in out["map"]["legend"].items() if k in symbols}
     if view.get("navigation"):
         out["navigation"] = pick(
             view["navigation"], ("position", "current_site", "leads", "leads_source", "truncated")
@@ -257,7 +303,7 @@ def concise_observation(view, event_detail="task", force_types=()):
             out[key] = reading_menu(view[key])
     if "reports" in view:
         reports, filtered = project_events(view["reports"], event_detail, force_types)
-        out["reports"] = deepcopy(reports[-12:])
+        out["reports"] = deepcopy(reports[-4:])
         out["reports_omitted"] = (
             len(view["reports"]) - len(out["reports"]) + view.get("reports_truncated", 0)
         )
@@ -276,7 +322,7 @@ def concise_observation(view, event_detail="task", force_types=()):
 
 
 def character_brief(report):
-    out = pick(report, ("state_id", "effect_id", "status", "available", "reason", "schema_version"))
+    out = pick(report, ("state_id", "status", "available", "reason", "schema_version"))
     out.update(format="character_brief", projection=True, full_query="status")
     if not report.get("available"):
         return out
@@ -284,22 +330,54 @@ def character_brief(report):
     c = report["character"]
     brief = pick(c, ("id", "name", "race", "position", "alive", "on_ground", "health", "skills"))
     health = c.get("health", {})
-    brief["health"] = {k: deepcopy(v) for k, v in health.items() if not isinstance(v, (dict, list))}
+    brief["health"] = pick(
+        health,
+        (
+            "blood_count",
+            "blood_max",
+            "wounds",
+            "pain",
+            "exhaustion",
+            "nausea",
+            "dizziness",
+            "fever",
+            "infection_level",
+            "numbness",
+            "paralysis",
+            "stunned",
+            "suffocation",
+            "unconscious",
+            "webbed",
+            "winded",
+        ),
+    )
     if "flags" in health:
         brief["health"]["flags"] = deepcopy(health["flags"])
     brief["identity"] = pick(
         c.get("identity", {}), ("english_name", "age_years", "profession", "hist_figure_id")
     )
     brief["attributes"] = {
-        key: [pick(a, ("name", "value", "effective")) for a in values]
+        key: {
+            a["name"]: a["value"]
+            if "value" in a and a.get("effective") == a["value"]
+            else pick(a, ("value", "effective"))
+            for a in values
+        }
         for key, values in c.get("attributes", {}).items()
         if isinstance(values, list)
     }
     if isinstance(c.get("skills"), list):
-        brief["skills"] = [
-            pick(s, ("name", "rating_name", "effective", "experience", "next_level_xp_threshold"))
+        brief["skills"] = {
+            s["name"]: dict(
+                pick(s, ("rating_name", "effective")),
+                **(
+                    {"xp": [s["experience"], s["next_level_xp_threshold"]]}
+                    if "experience" in s and "next_level_xp_threshold" in s
+                    else pick(s, ("experience", "next_level_xp_threshold"))
+                ),
+            )
             for s in c["skills"]
-        ]
+        }
     load = c.get("encumbrance", {})
     brief["encumbrance"] = pick(
         load,
@@ -355,7 +433,7 @@ def character_brief(report):
                 )
         brief["physiology"] = {"interpreted_needs": interpreted}
     brief["combat"] = pick(c.get("combat", {}), ("opponent", "attacker_ids", "interface"))
-    brief["inventory"] = [reading_item(i) for i in c.get("inventory", [])]
+    brief["inventory"] = [inventory_item(i) for i in c.get("inventory", [])]
     brief["inventory_truncated"] = c.get("inventory_truncated", False)
     coverage = c.get("coverage", {})
     native_brief = coverage.get("scope") == "brief"
@@ -397,6 +475,7 @@ def unit_brief(report):
                 "skills",
                 "affiliations",
                 "combat",
+                "condition",
                 "coverage",
                 "unavailable",
                 "truncated",

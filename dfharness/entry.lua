@@ -5,7 +5,7 @@
 local assets={bridge='bridge',glyph='cp437',interactions='interactions',ui='native_ui',
     guard='input_guard',runtime='runtime',reports='reports',environment='environment',
     movement='movement',wire='wire',session='session',screen='screen',items='items',
-    rest='rest',aim='aim',saving='saving',health='health',progress='progress',attack='attack',burden='burden'}
+    rest='rest',aim='aim',saving='saving',health='health',progress='progress',attack='attack',burden='burden',pathing='pathing'}
 
 function request(payload)
     dfhack.df_llm_json_null=dfhack.df_llm_json_null or {}
