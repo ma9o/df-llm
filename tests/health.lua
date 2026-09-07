@@ -84,7 +84,7 @@ test('failed condition fields remain unavailable instead of plausible healthy de
 end)
 test('combat condition preserves disabled limbs, native damage and grapple identities',function()
     env.df.wrestle_state_type={[0]='LatchedOn',[1]='Grab'}
-    local u={alive=true,dead=false,flags1={on_ground=true},body={blood_count=0,blood_max=100,wounds=vector({}),
+    local u={alive=true,dead=false,flags1={on_ground=true,projectile=true},body={blood_count=0,blood_max=100,wounds=vector({}),
         body_plan={body_parts=vector({{name_singular=vector({'left leg'})},{name_singular=vector({'right leg'})}})},
         components={body_part_status=vector({{bone_damage=true},{bone_damage=false}})}},
         counters={unconscious=0,pain=0},counters2={exhaustion=0},
@@ -110,6 +110,31 @@ test('combat details are bounded and omitted anatomy is never complete',function
     assert(not r.complete and #r.parts_with_status==16 and r.parts_omitted==2)
     assert(#r.grapples==16 and r.grapples_omitted==2)
     assert(r.unavailable.functional_limbs and r.functional_limbs==nil)
+end)
+test('opaque shared-pointer grapples retain their count without inventing empty holds',function()
+    local touched=0
+    local opaque=setmetatable({_kind='primitive',_type='shared_ptr<struct df::unit_item_wrestle>'},
+        {__index=function()touched=touched+1;error('Opaque native record accessed')end})
+    local r=m.combat_condition({status={wrestle_items=vector({opaque})}})
+    assert(touched==0 and r.grapple_count==1 and r.grapples==nil)
+    assert(not r.complete and r.unavailable.grapples:find('opaque',1,true))
+end)
+test('creature flags preserve false and honor native addition and removal precedence',function()
+    local flags=function(values)return setmetatable(values,{__index=function()return false end})end
+    local caste={flags=flags{NOSTUN=true,NOPAIN=true}}
+    env.dfhack.units.getCasteRaw=function()return caste end
+    local u={uwss_add_caste_flag=flags{NOEXERT=true,NOPAIN=true},uwss_remove_caste_flag=flags{NOPAIN=true}}
+    local r=m.creature_flags(u)
+    assert(r.complete and r.flags.NOSTUN and r.flags.NOEXERT)
+    assert(r.flags.NOPAIN==false and r.flags.NOBREATHE==false and r.flags.NOT_LIVING==false)
+    r=m.creature_flags(u,{'NOSTUN','DIURNAL'})
+    assert(r.complete and r.flags.DIURNAL==false)
+    u.uwss_remove_caste_flag=setmetatable({},{__pairs=function()error('Missing native modifier')end})
+    r=m.creature_flags(u)
+    assert(not r.complete and not next(r.flags) and r.unavailable.NOSTUN)
+    env.dfhack.units.getCasteRaw=function()return nil end
+    r=m.creature_flags(u)
+    assert(not r.complete and not next(r.flags))
 end)
 test('player progress preserves zero without touching inventory or wound identities',function()
     local forbidden=setmetatable({},{__index=function()error('Unrequested player detail read')end})

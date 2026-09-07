@@ -1,5 +1,5 @@
 -- Synthetic native actions; no game inputs, world objects or timers are changed.
-local source=...
+local source,events_source=...
 local function vector(values)
     local out={};for i,value in ipairs(values) do out[i-1]=value end
     return setmetatable(out,{__len=function()return #values end})
@@ -8,13 +8,19 @@ local function clone(v)
     if type(v)~='table' then return v end
     local out={};for k,value in pairs(v) do out[k]=clone(value) end;return out
 end
-local unit={id=1,actions=vector({})}
+local unit={id=1,actions=vector({}),flags1={on_ground=false}}
 local target={id=2,body={wounds=vector({})}}
 local status={reports=vector({})}
 local loaded,supported,tag=true,true,'attack'
 local callbacks={}
-local env=setmetatable({df={unit={find=function(id)return id==2 and target or nil end},
-    global={world={status=status}},announcement_type={[1]='MOVED_OUT_OF_RANGE',[2]='COMBAT_STRIKE_DETAILS'},
+local env=setmetatable({require=function(name)
+    assert(name~='plugins.eventful','Synthetic attack fixture uses the native cursor fallback')
+    return require(name)
+end,df={unit={find=function(id)return id==2 and target or nil end},
+    global={world={status=status}},announcement_type={[1]='MOVED_OUT_OF_RANGE',[2]='COMBAT_STRIKE_DETAILS',
+        [3]='COMBAT_DODGE',[4]='COMBAT_JUMP_DODGE_STRIKE',[5]='COMBAT_BLOCK',[6]='COMBAT_PARRY',
+        [7]='COMBAT_CHARGE_DEFENDER_KNOCKED_OVER',[8]='COMBAT_CHARGE_DEFENDER_TUMBLES',
+        [9]='COMBAT_CHARGE_COLLISION'},
     unit_action_type={Attack=1,attrs=setmetatable({},
     {__index=function()return {tag=tag}end})}},dfhack={
     isWorldLoaded=function()return loaded end,isMapLoaded=function()return loaded end,
@@ -23,6 +29,7 @@ local env=setmetatable({df={unit={find=function(id)return id==2 and target or ni
     timeout=function(_,mode,callback)assert(mode=='ticks');callbacks[#callbacks+1]=callback;return #callbacks end,
 }},{__index=_ENV})
 local m=assert(load(source,'attack-fixture','t',env))({array=function()return {}end,copy=clone,
+    report_events=assert(load(events_source,'attack-report-events-fixture','t',env))(),
     bindings={support=function()return {native_hotkey_available=supported}end}})
 local menu={kind='combat',mode='AIM_ATTACK',target_unit_id=2,attack_flags={'quick'}}
 local option={kind='attack',body_part_id=3,item_id=4,attack_index=0}
@@ -32,7 +39,7 @@ local function queued(id)
         flags={quick=true,heavy=false,wild=false,precise=false,charge=false}}}}
 end
 local function start(wounds,reports)
-    unit.actions=vector({});callbacks={}
+    unit.actions=vector({});callbacks={};unit.flags1.on_ground=false
     target.body.wounds=vector(wounds or {});status.reports=vector(reports or {})
     local e=m.prepare({kind='strike'},menu,option)
     local action=queued();unit.actions=vector({action})
@@ -115,10 +122,83 @@ test('preexisting wounds and old range reports cannot verify this attack',functi
     a.data.attack.timer1=0;tick()
     assert(e.effect.resolution=='processed' and e.effect.damage=='unverified')
 end)
-test('native range failure is explicit without parsing combat prose',function()
-    local e,a=start();status.reports=vector({{id=0,type=1,text='not inspected'}})
+test('range failure is attributed to the player with labelled report text',function()
+    local e,a=start();status.reports=vector({{id=0,type=1,text='Your opponent has moved out of range!'}})
     a.data.attack.timer1=0;tick()
-    assert(e.effect.resolution=='out_of_range' and e.effect.report_id==0)
+    assert(e.effect.resolution=='out_of_range' and e.effect.report_id==0 and e.effect.source=='report_text')
+end)
+test('player misses dodges blocks and parries are distinct from incoming attacks',function()
+    for _,case in ipairs({
+        {3,'You miss the frail ettin!','missed'},
+        {4,'You attack the frail ettin but He jumps away!','dodged'},
+        {5,'You strike at the dwarf but the shot is blocked with a shield!','blocked'},
+        {6,'You strike at the dwarf but the shot is parried with a sword!','parried'},
+    }) do
+        local e,a=start();status.reports=vector({{id=0,type=case[1],text=case[2]}})
+        a.data.attack.timer1=0;tick()
+        assert(e.effect.resolution==case[3] and e.effect.source=='report_text' and e.effect.language=='en')
+    end
+    for _,case in ipairs({{3,'The frail ettin misses you!'},
+        {4,'The frail ettin attacks you but You jump away!'},
+        {5,'The frail ettin strikes at you but the shot is blocked with a shield!'},
+        {6,'The dwarf strikes at you but the shot is parried with a hammer!'},
+        {3,'The dwarf misses the ettin!'}, {3,'Vous ratez votre adversaire!'}}) do
+        local e,a=start();status.reports=vector({{id=0,type=case[1],text=case[2]}})
+        a.data.attack.timer1=0;tick();assert(e.effect.resolution=='processed')
+    end
+end)
+test('player dodges and knockdowns resolve a vanished swing without claiming a strike',function()
+    for _,case in ipairs({{4,'The frail ettin attacks you but You scramble away!'},
+        {4,'You jump away!'}, {4,'You roll away!'},
+        {7,'You are knocked over!'}, {8,'You are knocked over and tumble backward!'},
+        {9,'The frail ettin collides with you!'}}) do
+        local e=start();status.reports=vector({{id=0,type=case[1],text=case[2]}})
+        unit.actions=vector({});tick()
+        assert(e.phase=='cancelled' and not e.tracking and not e.strike_observed and not e.recovery_observed)
+        assert(e.effect.resolution=='cancelled' and e.effect.cause.report_id==0)
+    end
+end)
+test('native prone transition explains cancellation without needing report language',function()
+    local e=start();unit.flags1.on_ground=true;unit.actions=vector({});tick()
+    assert(e.phase=='cancelled' and e.effect.cause.source=='native_unit_flags')
+    e=start();unit.flags1.on_ground=true;tick();unit.actions=vector({});tick()
+    assert(e.phase=='unverified') -- already prone in the preceding sample
+end)
+test('other actors and old incoming reports do not explain a disappeared attack',function()
+    for _,case in ipairs({{4,'You attack the frail ettin but He jumps away!'},
+        {7,'The frail ettin is knocked over!'}, {9,'The dwarf collides with the ettin!'}}) do
+        local e=start();status.reports=vector({{id=0,type=case[1],text=case[2]}})
+        unit.actions=vector({});tick();assert(e.phase=='unverified')
+    end
+    local e=start(nil,{{id=7,type=7,text='You are knocked over!'}})
+    unit.actions=vector({});tick();assert(e.phase=='unverified')
+    e=start();status.reports=vector({{id=8,type=4,text='You jump away!'}})
+    tick();unit.actions=vector({});tick();assert(e.phase=='unverified')
+end)
+test('interrupted recovery retains the actual hit or miss and does not invent recovery',function()
+    local e,a=start();status.reports=vector({{id=0,type=3,text='You miss the ettin!'}})
+    a.data.attack.timer1=0;tick()
+    status.reports=vector({{id=0,type=3,text='You miss the ettin!'},
+        {id=1,type=4,text='The ettin attacks you but You jump away!'}})
+    unit.actions=vector({});tick()
+    assert(e.phase=='cancelled' and e.strike_observed and not e.recovery_observed)
+    assert(e.effect.resolution=='missed' and e.effect.recovery=='cancelled')
+end)
+test('effects exclude preparing reports, include delayed reports and reject ambiguity',function()
+    local e,a=start();status.reports=vector({{id=0,type=3,text='You miss a dwarf!'}})
+    tick();a.data.attack.timer1=0;tick();assert(e.effect.resolution=='processed')
+    a.data.attack.timer2=1;tick()
+    status.reports=vector({{id=1,type=3,text='You miss the ettin!'}})
+    unit.actions=vector({});tick();assert(e.phase=='finished' and e.effect.resolution=='missed')
+    e,a=start();status.reports=vector({{id=0,type=3,text='You miss the ettin!'},
+        {id=1,type=3,text='You miss the dwarf!'}})
+    a.data.attack.timer1=0;tick();assert(e.effect.damage=='unverified' and e.effect.unavailable:find('Multiple'))
+end)
+test('bounded report overflow cannot classify an arbitrary recent result',function()
+    local e,a=start();local many={}
+    for i=0,512 do many[#many+1]={id=i,type=3,text='You miss the ettin!'} end
+    status.reports=vector(many);a.data.attack.timer1=0;tick()
+    assert(e.effect.damage=='unverified' and e.effect.unavailable:find('512'))
 end)
 test('failed optional effect reads preserve phase proof and unknown damage',function()
     local e,a=start();target.body.wounds=nil;a.data.attack.timer1=0;tick()

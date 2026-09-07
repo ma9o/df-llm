@@ -2,7 +2,7 @@ import unittest
 from copy import deepcopy
 from unittest.mock import patch
 
-from dfharness.character_progress import progress_changes
+from dfharness.character_progress import compact_progress, progress_changes
 from dfharness.client import Client
 from tests.support import Bridge
 from tests.test_workflows import scene
@@ -96,7 +96,9 @@ class CharacterProgressTests(unittest.TestCase):
         self.assertEqual(first["outcome"], "limit_reached")
         self.assertEqual(second["outcome"], "completed")
         for r in (first, second):
-            self.assertEqual(r["changes"]["progress"]["skills"]["HAMMER"]["xp"], 10)
+            self.assertEqual(r["changes"]["progress"]["xp"]["HAMMER"], 10)
+        self.assertEqual(first["changes"]["progress"]["levels"]["HAMMER"]["progress"], [0, 700])
+        self.assertNotIn("levels", second["changes"]["progress"])
         reads = [r for r in bridge.calls if r["op"] in ("poll", "observe", "begin_dispatch")]
         self.assertTrue(all(r["character_progress"] for r in reads))
         self.assertFalse(any(r["op"].startswith("character_") for r in bridge.calls))
@@ -107,3 +109,23 @@ class CharacterProgressTests(unittest.TestCase):
         original = deepcopy((old, new))
         progress_changes(old, new)
         self.assertEqual((old, new), original)
+
+    def test_compact_progress_preserves_negative_zero_and_unknown_without_routine_fractions(self):
+        changes = {
+            "skills": {
+                "HAMMER": {"xp": -1, "progress": [100, 600]},
+                "SHIELD": {"xp": 0, "level": "Adequate", "progress": [0, 700]},
+                "DODGING": {"record": "removed"},
+            },
+            "unavailable": {"skills": [7]},
+        }
+        self.assertEqual(
+            compact_progress(changes),
+            {
+                "xp": {"HAMMER": -1, "SHIELD": 0},
+                "levels": {"SHIELD": {"level": "Adequate", "progress": [0, 700]}},
+                "records": {"DODGING": "removed"},
+                "unavailable": {"skills": [7]},
+            },
+        )
+        self.assertIn("progress", changes["skills"]["HAMMER"])

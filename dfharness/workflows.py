@@ -820,32 +820,6 @@ def next_step(workflow, view):
                 "needs_input", "The game did not offer the requested inventory/pickup menu."
             )
         if pending["kind"] == "select" and index < len(tasks) and not satisfied(tasks[index], view):
-            cursor = pending.get("report_cursor")
-            refusals = [
-                r
-                for r in view.get("reports", [])
-                if r.get("type") == "NO_GRASP_FOR_PICKUP"
-                and type(cursor) is int
-                and r.get("id", -1) > cursor
-            ]
-            if refusals:
-                return result(
-                    "needs_input",
-                    "The game refused the pickup: no free grasp.",
-                    {
-                        "blocker_kind": "native_refusal",
-                        "facts": {
-                            "item_id": tasks[index]["item_id"],
-                            "native_refusal": "NO_GRASP_FOR_PICKUP",
-                            "report_id": refusals[-1]["id"],
-                            "held_item_ids": sorted(
-                                i["id"]
-                                for i in inventory(view).values()
-                                if i.get("mode") in ("Weapon", "Hauled")
-                            ),
-                        },
-                    },
-                )
             if (view.get("menu") or {}).get("choosing_amount"):
                 return result(
                     "needs_input",

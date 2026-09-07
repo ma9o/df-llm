@@ -78,6 +78,9 @@ snapshot=function(value,path,depth)
     end
     local native_kind=value._kind
     if native_kind=='primitive' then
+        if type(value._type)=='string' and value._type:match('^shared_ptr<') then
+            error('DFHack does not expose the fields of this shared-pointer record',0)
+        end
         local v=value.value
         assert(type(v)=='string' or type(v)=='number' or type(v)=='boolean','Unsupported primitive reference')
         return snapshot(v,path,depth+1)
@@ -159,15 +162,12 @@ local caste=h.caste
 -- Shared physical and combat readings, before the optional large profiles.
 out.physiology=object()
 out.physiology.effective_creature_flags=read('physiology.effective_creature_flags',function()
-    local r=object()
-    for _,name in ipairs({'NO_EAT','NO_DRINK','NO_SLEEP','NOBREATHE','NOEXERT','NOPAIN','BLOODSUCKER',
-            'NOT_LIVING','DIURNAL','NOCTURNAL','CREPUSCULAR','ALL_ACTIVE'}) do
-        local base=caste.flags[name]
-        local ok,added=pcall(function() return u.uwss_add_caste_flag[name] end)
-        local ok2,removed=pcall(function() return u.uwss_remove_caste_flag[name] end)
-        r[name]=not (ok2 and removed) and ((ok and added) or base) or false
+    local r=h.health.creature_flags(u,{'NO_EAT','NO_DRINK','NO_SLEEP','NOBREATHE','NOEXERT','NOPAIN','NOSTUN','BLOODSUCKER',
+        'NOT_LIVING','DIURNAL','NOCTURNAL','CREPUSCULAR','ALL_ACTIVE'})
+    for name,reason in pairs(r.unavailable or {})do
+        h.unavailable('physiology.effective_creature_flags.'..name,reason)
     end
-    return r
+    return r.flags
 end)
 if h.burden then h.burden.apply(u,out,h)end
 if h.calculations then
@@ -179,6 +179,7 @@ out.combat=object()
 if h.interfaces then out.combat.interface=h.interfaces.combat end
 out.combat.opponent=profile(u,'opponent','combat.opponent')
 out.combat.attacker_ids=profile(u.status,'attacker_ids','combat.attacker_ids')
+out.combat.grapple_count=read('combat.grapple_count',function()return #u.status.wrestle_items end)
 if h.profile=='brief' then coverage();return out end
 
 local hf=read('historical_figure',function() return df.historical_figure.find(u.hist_figure_id) end)

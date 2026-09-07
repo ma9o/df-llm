@@ -40,8 +40,11 @@ the existing constrained adapter. Thus `routing.py` is **not retired**. Ordinary
 CLI, Python and MCP requests omit those restrictions and use native pathing;
 explicit false, zero and empty constraints remain explicit. Flat-ground paths,
 positive radius, interruption and incremental/complete resume were tested live.
-Cross-level goals use the same native connection check but have not yet had a
-dedicated live traversal trial.
+The subsequent ettin approach verified cross-level traversal in both directions
+and a simultaneous local coordinate rebase: `(102,88,136)` to requested
+`(106,88,135)` arrived at local `(58,88,135)` after the origin moved 48 tiles.
+The burrow mouth at absolute `(5614,14624,105)` was reached through the native
+path command, and the save/drop/entry sequence preserved the entrance checkpoint.
 
 ## Corrections to the proposed travel shortcut
 
@@ -107,9 +110,11 @@ reload to acquire the new tool set. Server launch respects persistent settings.
 
 Strike receipts and unit inspection now share bounded native combat condition
 reads: blood, consciousness, functional limbs, body-part status and current
-grapples. Empty lists, zero limb counts, unavailable fields and truncation are
-distinct. Comprehensive character status already exposes the complete anatomy
-and wrestling profiles. Defense, dodge and wrestling **execution** remain
+grapple counts. Empty lists, zero limb counts, unavailable fields and truncation
+are distinct. Active hold records are opaque shared pointers in this release;
+their details are explicitly unavailable in both condition and comprehensive
+status. Comprehensive character status retains anatomy and wrestling coverage
+metadata. Defense, dodge and wrestling **execution** remain
 explicitly unsupported; this release does not claim that a combat menu or a
 condition read completes those actions.
 

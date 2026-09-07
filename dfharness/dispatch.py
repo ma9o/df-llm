@@ -8,6 +8,7 @@ from typing import Any
 
 from .composition import active_workflow, observation_args, progress
 from .policy import execution_policy, interruption, watch_options
+from .refusals import native_refusal
 from .rpc import BridgeError, DFHackError, pending_pause, rpc_deadline
 from .state import compact_result, objective_values, speech_result
 from .wire import Checkpoint, observation
@@ -26,6 +27,8 @@ def response_for(modal, policy):
         return {"type": "dismiss"}
     if policy["mode"] == "complete" and modal.get("kind") == "action_prompt":
         return {"type": "action_prompt", "choice": "finish"}
+    if policy["mode"] == "complete" and modal.get("kind") == "waiting_prompt":
+        return {"type": "action_prompt", "choice": "continue"}
     return None
 
 
@@ -190,7 +193,7 @@ def run_dispatch(
             if event["id"] > cursor:
                 events[event["id"]] = event
 
-    def finish(outcome, reason, next_action=None, details=None):
+    def finish(outcome, reason, next_action=None, details: dict[str, Any] | None = None):
         nonlocal view, view_ref, pending_read
         if pending_read:
             # Observers can stop execution on a narrow processing sample. Final
@@ -223,6 +226,18 @@ def run_dispatch(
         world_changed = (details or {}).get("blocker_kind") == "world_changed"
         if not world_changed:
             collect(view)
+        if outcome in ("no_effect", "needs_input") and not world_changed:
+            leaf = active_workflow(workflow)
+            refusal = native_refusal(leaf, view, events.values()) if leaf else None
+            if refusal:
+                details = deepcopy(details or {})
+                details["verification_reason"] = reason
+                details["blocker_kind"] = "native_refusal"
+                details["facts"] = {**details.get("facts", {}), **refusal["facts"]}
+                reason, outcome = refusal["reason"], "needs_input"
+                # A resume can still verify a late postcondition, but must not
+                # replay the refused input when a recipe has consumed pending.
+                leaf.setdefault("context", {})["native_refusal"] = deepcopy(refusal)
         workflow["events"] = list(events.values())
         workflow["task_event_ids"] = sorted(task_event_ids)
         workflow["prompts"] = summary["prompts"]
@@ -344,6 +359,8 @@ def run_dispatch(
                 pending_read = False
             read_args = needed
         reusable_state = None
+        if previous_input is not None and state.get("presentation") is not None:
+            previous_input["presentation"] = deepcopy(state["presentation"])
         if state.get("world_changed"):
             return finish(
                 "interrupted",
@@ -427,6 +444,13 @@ def run_dispatch(
             reports = {e["id"]: e for e in view.get("reports", [])}
             reports.update(events)
             decision = next_step(planned, dict(view, reports=list(reports.values())))
+            refusal = (active_workflow(workflow) or {}).get("context", {}).get("native_refusal")
+            if refusal and "input" in decision:
+                return finish(
+                    "needs_input",
+                    refusal["reason"],
+                    details={"blocker_kind": "native_refusal", "facts": refusal["facts"]},
+                )
             task_event_ids.update(decision.get("task_event_ids", []))
             # Observation facts remain useful when an input limit prevents
             # committing the planned mechanics. Never commit an unsent step's
@@ -484,6 +508,9 @@ def run_dispatch(
             )
         else:
             mechanical_steps += 1
+            active_workflow(planned).setdefault("context", {})["refusal_after"] = max(
+                max(events, default=cursor), view.get("report_cursor", cursor)
+            )
             if decision.get("pending"):
                 active_workflow(planned).setdefault("context", {})["pending"] = decision["pending"]
         workflow = planned
@@ -522,6 +549,7 @@ def run_dispatch(
                         else view["state_id"]
                     ),
                     "parent_dispatch": root_id,
+                    **({"fastcombat": True} if policy["mode"] == "complete" else {}),
                     "ui_mode": read_args["ui_mode"],
                     **({"capture": decision["capture"]} if decision.get("capture") else {}),
                     **(

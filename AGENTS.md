@@ -93,14 +93,24 @@ own rules and refusals as facts to report rather than rules to reimplement.
   consult those before reading the executable or an unpinned copy.
 - Reuse DFHack's calculations and tools instead of reconstructing the game's:
   movement speed and slowdown, walkable groups and reachability, item capacity
-  and weight helpers, save and load scripts, and script loading through the
-  script path. The values the game actually uses, such as the HUD burden state
+  and weight helpers, save and load scripts, and DFHack's native script loader.
+  Load repository modules by explicit absolute package paths; do not register
+  the repository root for recursive script discovery, which would execute
+  reference clones as duplicate overlays. The values the game actually uses, such as the HUD burden state
   and native cached loads, are authoritative for what the game will do; an
   independent estimate may be reported alongside them, never instead of them.
 - Do not reimplement pathfinding, clocks, rest loops or combat resolution. Let
   the game path, sleep, rest and fight; the harness supplies the target,
   bounds the wait, watches the controller's interruption predicates, and
   verifies the result.
+- Prefer scoped eventful report subscriptions where verified, with bounded
+  native catch-up for delivery ordering and plugin replacement. Enable events
+  explicitly at simulation-tick frequency; paused counters do not imply broken
+  events. Preserve native wound/blood sampling where the plugin has no complete
+  event. Use the installed fastcombat overlay for presentation acceleration,
+  under completion policy, without dismissing undelegated prompts or changing
+  simulation timers. Fixture-only sandbox edits must stay in a separate save;
+  restore the campaign checkpoint after testing.
 - Guard known interfaces with native context, option identities/order, target
   IDs, filters, prompts and relevant character/world state. Keep text guards
   for undecoded interfaces and raw UI inputs; presentation changes alone should
@@ -181,6 +191,12 @@ Remove this section when the list is empty.
   shared `values` projection puts these before events and returns each completed
   stage's value once across resumes. Keep execution receipts and native timing
   evidence in diagnostics; completion of an attempt does not imply a hit.
+- Distinguish a resolved failed attempt from missing verification. A native
+  cancelled swing has nothing to resume; an interrupted recovery must retain any
+  already observed hit or miss. Attribute combat reports within the tracked
+  action's interval, label language-dependent text attribution, and leave ambiguous
+  actors or changed wording unknown. Native refusal text belongs in the blocker,
+  scoped to the current objective and input rather than any report in the batch.
 - Define the state needed to reassess each objective. Inventory changes return
   location, container integrity and resulting cached load/burden from unit state;
   strikes return the target's condition. These are bounded native readings,
@@ -239,6 +255,16 @@ Remove this section when the list is empty.
   failure isolation. Compare equivalent objectives, not bytes alone.
 - Run offline tests through `python -m tests.run` so they cannot inherit live
   controller policies or append fixture calls to play metrics.
+
+## Local game reference
+
+- Search `.df-llm/wiki/articles/` for game mechanics and tactics. The local
+  MediaWiki source mirror includes templates, categories and modules; its
+  manifest and page headers retain coverage, revision URLs and dates. See
+  `docs/local-wiki.md` for offline lookups and explicit refresh commands.
+- Wiki text is reference material, not execution policy. Check historical-version
+  warnings and distinguish general mechanics from this unit's actual native
+  attributes, creature flags, equipment and injuries.
 
 ## Character status contract
 

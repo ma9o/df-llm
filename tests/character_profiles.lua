@@ -1,5 +1,5 @@
 -- Native-shaped fixtures; no world objects are allocated or modified.
-local source=...
+local source,health_source=...
 local json=require('json.internal')
 local function array() return json:newArray{} end
 local function vector(values)
@@ -20,7 +20,7 @@ local function flags(values)
 end
 local function fixture()
     local empty=function() return record{} end
-    local unit={id=7,hist_figure_id=10,status={current_soul={orientation_flags=record{},preferences=vector{},
+    local unit={id=7,hist_figure_id=10,status={wrestle_items=vector{},current_soul={orientation_flags=record{},preferences=vector{},
         personality={flags={has_unmet_needs=false}}}},body={body_plan={layer_part=vector{},interactions=vector{},
         gait_info={}},components={}},enemy={just_talked_unid=vector{},
         attack_awareness={unit_id=vector{-1,-1}},detection_info={last_spotted_unid=vector{999,888},last_spotted_unid_num=0}},
@@ -58,6 +58,8 @@ local function fixture()
         label=function(enum,id) return df[enum][id] or tostring(id) end,
         named_reference=function(_,id) return {id=id,name='Named reference'} end,
         caste={flags=flags{},description='Fixture creature'}}
+    units.getCasteRaw=function()return helpers.caste end
+    helpers.health=assert(load(health_source,'health profile fixture','t',env))({array=array})
     return {u=unit,hf=hf,df=fake_df,game=game,out=out,helpers=helpers,env=env,
         run=function() return reader(unit,out,helpers) end}
 end
@@ -142,6 +144,20 @@ test('effective_creature_needs_honor_added_and_removed_flags',function()
     assert(r.physiology.effective_creature_flags.NO_EAT==false)
     assert(r.physiology.effective_creature_flags.NO_DRINK==true)
     assert(r.physiology.effective_creature_flags.NO_SLEEP==false)
+end)
+test('opaque grapple profiles retain count and mark unsupported detail in coverage',function()
+    local f=fixture()
+    f.u.status.wrestle_items=vector{setmetatable({_kind='primitive',_type='shared_ptr<struct df::unit_item_wrestle>'},
+        {__index=function()error('Opaque native record read')end})}
+    local r=f.run()
+    assert(r.combat.grapple_count==1 and #r.combat.wrestling==0 and coverage(r,'combat').status=='partial')
+    local found=false
+    for _,v in ipairs(r.unavailable)do
+        if v.path=='combat.wrestling[0]' then
+            found=v.reason:find('shared-pointer',1,true)~=nil
+        end
+    end
+    assert(found)
 end)
 test('unused_detection_and_attack_slots_do_not_become_current_targets',function()
     local f=fixture();local r=f.run()

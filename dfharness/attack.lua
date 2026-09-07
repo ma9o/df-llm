@@ -5,7 +5,7 @@ local function build(...)
 -- This module never appends actions, changes timers, or sends gameplay input.
 local h=...
 local M={}
-local MAX_ACTIONS,MAX_SAMPLES=256,8192
+local MAX_ACTIONS,MAX_SAMPLES,MAX_REPORTS=256,8192,512
 local identity={'target_unit_id','attack_item_id','target_body_part_id','attack_body_part_id','attack_id'}
 local styles={'quick','heavy','wild','precise','charge'}
 local function integer(value,name)
@@ -44,7 +44,7 @@ function M.state()
     local ok,out=pcall(function()
         assert(h.bindings.support().native_hotkey_available,'Attack phases are unverified for this build')
         local unit=actor()
-        return {available=true,unit_id=unit.id,actions=read_actions(unit)}
+        return {available=true,unit_id=unit.id,actions=read_actions(unit),on_ground=unit.flags1.on_ground}
     end)
     return ok and out or {available=false,reason=tostring(out):sub(1,240)}
 end
@@ -75,37 +75,67 @@ local function effect_baseline(target_id)
     end)
     return ok and out or {unavailable=tostring(out):sub(1,240)}
 end
-local function effects(evidence)
+local function outgoing(report)
+    local text=report.text or ''
+    -- Persistent reports have no attacker/defender IDs. These deliberately
+    -- narrow English subject matches are a labelled fallback, not native IDs.
+    -- Only this tracked attack's strike-tick window is eligible.
+    if report.type=='COMBAT_DODGE' and text:match('^You miss ') then return 'missed' end
+    if report.type=='COMBAT_JUMP_DODGE_STRIKE' and text:match('^You attack ') then return 'dodged' end
+    if text:match('^You strike at ') or text:match('^You attack ') then
+        if report.type=='COMBAT_BLOCK' then return 'blocked' end
+        if report.type=='COMBAT_PARRY' then return 'parried' end
+    end
+    if report.type=='MOVED_OUT_OF_RANGE' and text:match('^Your opponent ') then return 'out_of_range' end
+end
+local function cancellation(reports)
+    for _,report in ipairs(reports or {}) do
+        local text,kind=report.text or '',report.type
+        local dodge=false
+        if kind=='COMBAT_JUMP_DODGE_STRIKE' then
+            for _,verb in ipairs({'jump','roll','scramble'}) do
+                if text:match('^You '..verb..' away[!.]$')
+                    or text:match(' attacks you but [Yy]ou '..verb..' away[!.]$') then dodge=true end
+            end
+        end
+        if dodge or ((kind=='COMBAT_CHARGE_DEFENDER_KNOCKED_OVER' or kind=='COMBAT_CHARGE_DEFENDER_TUMBLES')
+            and text:match('^You are knocked over'))
+            or (kind=='COMBAT_CHARGE_COLLISION' and text:match(' collides with you[!.]$')) then
+            return {type=kind,report_id=report.id,source='report_text',language='en'}
+        end
+    end
+end
+local function effects(evidence,reports,report_error)
     local before=evidence.effect_baseline
     local current=effect_baseline(evidence.target_unit_id)
     local out={resolution='processed',damage='unverified'}
-    if before.unavailable or current.unavailable then
-        out.unavailable=before.unavailable or current.unavailable;return out
-    end
     local wounds=h.array()
     local prior={}
-    for _,wound in ipairs(before.wounds) do prior[wound.id]=true end
-    for _,wound in ipairs(current.wounds) do
+    for _,wound in ipairs(before.wounds or {}) do prior[wound.id]=true end
+    for _,wound in ipairs(current.wounds or {}) do
         if not prior[wound.id] and wound.attacker==evidence.unit_id then wounds[#wounds+1]=wound.id end
     end
     table.sort(wounds)
-    if #wounds>0 then return {resolution='wounded',wound_ids=wounds} end
-    -- On this verified build MOVED_OUT_OF_RANGE is emitted only for the
-    -- adventurer's strike attempt (native 0x64a516..0x64a603). Other combat
-    -- text has no reliable actor identity, so never parse prose to claim a hit,
-    -- miss, block or parry. Unknown damage remains explicit.
-    local reports=df.global.world.status.reports
-    local inspected=0
-    for i=#reports-1,0,-1 do
-        local report=reports[i]
-        if report.id<=before.report_cursor then break end
-        inspected=inspected+1
-        if inspected>512 then out.unavailable='Attack report window exceeds 512';break end
-        if df.announcement_type[report.type]=='MOVED_OUT_OF_RANGE' then
-            return {resolution='out_of_range',report_id=report.id}
+    if not before.unavailable and not current.unavailable and #wounds>0 then
+        return {resolution='wounded',wound_ids=wounds,source='native_wounds'}
+    end
+    local matched
+    for _,report in ipairs(reports or {}) do
+        local resolution=outgoing(report)
+        if resolution then
+            if matched then return {resolution='processed',damage='unverified',
+                unavailable='Multiple player attack reports in the strike interval'} end
+            matched={resolution=resolution,report_id=report.id,source='report_text',language='en'}
         end
     end
+    if matched then return matched end
+    out.unavailable=before.unavailable or current.unavailable or report_error
     return out
+end
+local function capture_effect(evidence,after,stream)
+    local reports,report_error=stream:window(after)
+    local ok,effect=pcall(effects,evidence,reports,report_error)
+    evidence.effect=ok and effect or {resolution='processed',damage='unverified',unavailable=tostring(effect):sub(1,240)}
 end
 function M.prepare(request,menu,option)
     assert(type(request)=='table' and request.kind=='strike','Unknown input evidence request')
@@ -116,13 +146,16 @@ function M.prepare(request,menu,option)
     -- Queueing behind an already pending attack has different timing/target
     -- semantics. Return that fact instead of quietly adopting the older action.
     assert(#state.actions==0,'Another native attack is already pending')
+    local baseline=effect_baseline(menu.target_unit_id)
+    local reports=df.global.world.status.reports
     return {kind='strike',available=true,unit_id=state.unit_id,
         target_unit_id=menu.target_unit_id,body_part_id=option.body_part_id,
         item_id=option.item_id,attack_index=option.attack_index,
         flags=h.copy(menu.attack_flags),phase='submitting',strike_observed=false,
-        recovery_observed=false,tracking=false,effect_baseline=effect_baseline(menu.target_unit_id)}
+        recovery_observed=false,tracking=false,effect_baseline=baseline,
+        report_cursor=#reports>0 and reports[#reports-1].id or -1,last_on_ground=state.on_ground}
 end
-function M.sample(evidence)
+function M.sample(evidence,stream)
     local state=M.state()
     if not state.available or state.unit_id~=evidence.unit_id then
         unavailable(evidence,state.reason or 'Adventurer changed during the attack');return false
@@ -133,13 +166,31 @@ function M.sample(evidence)
         unavailable(evidence,'Native attack identity changed');return false
     end
     local previous=evidence.latest
+    local previous_cursor=evidence.report_cursor
+    local reports,report_error=stream:window(evidence.report_cursor)
+    if reports and #reports>0 then evidence.report_cursor=reports[1].id end
     if not current then
         -- A disappearing queue entry alone proves neither a strike nor recovery.
         if evidence.strike_observed and previous.recovery_ticks==1 then
+            capture_effect(evidence,evidence.effect_report_cursor,stream)
             evidence.phase='finished';evidence.recovery_observed=true;evidence.tracking=false
-        else unavailable(evidence,'Native attack disappeared before its phases were verified') end
+        else
+            local cause=cancellation(reports)
+            if not cause and evidence.last_on_ground==false and state.on_ground==true then
+                cause={type='became_prone',source='native_unit_flags'}
+            end
+            if cause then
+                evidence.phase='cancelled';evidence.tracking=false
+                if evidence.strike_observed then
+                    capture_effect(evidence,evidence.effect_report_cursor,stream)
+                    evidence.effect.recovery='cancelled'
+                else evidence.effect={resolution='cancelled'} end
+                evidence.effect.cause=cause
+            else unavailable(evidence,report_error or 'Native attack disappeared before its phases were verified') end
+        end
         return false
     end
+    evidence.last_on_ground=state.on_ground
     evidence.latest={strike_ticks=current.strike_ticks,recovery_ticks=current.recovery_ticks}
     if current.strike_ticks<0 or current.recovery_ticks<0
         or current.strike_ticks>previous.strike_ticks or current.recovery_ticks>previous.recovery_ticks then
@@ -150,8 +201,8 @@ function M.sample(evidence)
         -- attempts this attack (including range/defense failure), then recovers.
         -- This is NOT evidence that a blow landed or that the target was injured.
         if not evidence.strike_observed then
-            local ok,effect=pcall(effects,evidence)
-            evidence.effect=ok and effect or {resolution='processed',damage='unverified',unavailable=tostring(effect):sub(1,240)}
+            evidence.effect_report_cursor=previous_cursor
+            capture_effect(evidence,previous_cursor,stream)
         end
         evidence.strike_observed=true;evidence.phase='recovering'
     else evidence.phase='preparing' end
@@ -182,19 +233,22 @@ function M.submitted(evidence,session,receipt,input_id)
         unavailable(evidence,'Nonpositive initial attack timers have no verified completion model');return
     end
     evidence.phase='preparing';evidence.tracking=true
+    local stream=h.report_events.watch(evidence.report_cursor,MAX_REPORTS)
+    evidence.report_observer=stream.stats
+    local function close()stream:close()end
     local samples=0
     local function sample()
         if session.world_epoch~=evidence.world_epoch or session.receipts[input_id]~=receipt then
-            unavailable(evidence,'World changed or input evidence expired');return
+            unavailable(evidence,'World changed or input evidence expired');close();return
         end
-        local ok,again=pcall(M.sample,evidence)
-        if not ok then unavailable(evidence,tostring(again):sub(1,240));return end
-        if not again then return end
+        local ok,again=pcall(M.sample,evidence,stream)
+        if not ok then unavailable(evidence,tostring(again):sub(1,240));close();return end
+        if not again then close();return end
         samples=samples+1
-        if samples>=MAX_SAMPLES then unavailable(evidence,'Attack observer reached '..MAX_SAMPLES..' simulation ticks');return end
-        if not dfhack.timeout(1,'ticks',sample) then unavailable(evidence,'Native attack observer could not be scheduled') end
+        if samples>=MAX_SAMPLES then unavailable(evidence,'Attack observer reached '..MAX_SAMPLES..' simulation ticks');close();return end
+        if not dfhack.timeout(1,'ticks',sample) then unavailable(evidence,'Native attack observer could not be scheduled');close()end
     end
-    if not dfhack.timeout(1,'ticks',sample) then unavailable(evidence,'Native attack observer could not be scheduled') end
+    if not dfhack.timeout(1,'ticks',sample) then unavailable(evidence,'Native attack observer could not be scheduled');close()end
 end
 return M
 

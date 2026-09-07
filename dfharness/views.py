@@ -432,7 +432,9 @@ def character_brief(report):
                     ),
                 )
         brief["physiology"] = {"interpreted_needs": interpreted}
-    brief["combat"] = pick(c.get("combat", {}), ("opponent", "attacker_ids", "interface"))
+    brief["combat"] = pick(
+        c.get("combat", {}), ("opponent", "attacker_ids", "interface", "grapple_count")
+    )
     brief["inventory"] = [inventory_item(i) for i in c.get("inventory", [])]
     brief["inventory_truncated"] = c.get("inventory_truncated", False)
     coverage = c.get("coverage", {})

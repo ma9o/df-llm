@@ -82,7 +82,7 @@ GROUPS = (
     (
         ("strike",),
         ("core", "local_map", "combat", "strike"),
-        "One explicit aimed melee attempt and recovery; resulting target blood, consciousness, functional limbs, part damage and grapples are bounded native reads; phase completion is not guaranteed damage",
+        "One aimed melee attempt; native wounds and phases, labelled English report-text miss/defense/cancellation attribution, conservative unknown outcomes, and bounded target condition; completion does not imply a hit",
     ),
     (
         ("sequence",),

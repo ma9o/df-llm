@@ -71,6 +71,21 @@ out.combat=read('combat',function()
         last_hit=fields('combat.last_hit',u.last_hit,{'item','item_type','item_subtype','mattype','matindex'}),
         note='Native opponent reference; no hostility inference or win probability'}
 end)
+if out.combat then
+    out.combat.creature_flags=h.health.creature_flags(u)
+    for name,reason in pairs(out.combat.creature_flags.unavailable or {})do
+        out.unavailable[#out.unavailable+1]={path='combat.creature_flags.'..name,reason=reason}
+    end
+end
+out.condition=h.health.combat_condition(u)
+for name,reason in pairs(out.condition.unavailable or {})do
+    out.unavailable[#out.unavailable+1]={path='condition.'..name,reason=reason}
+end
+for _,name in ipairs({'parts','grapples'})do
+    if out.condition[name..'_omitted'] then
+        out.truncated[#out.truncated+1]={path='condition.'..name,omitted=out.condition[name..'_omitted']}
+    end
+end
 out.affiliations=read('affiliations',function()
     local hf=df.historical_figure.find(u.hist_figure_id)
     if not hf then return {present=false} end
@@ -94,7 +109,7 @@ end
 inventory_bounds(out.inventory or {})
 out.coverage={complete=#out.unavailable==0 and #out.truncated==0 and not out.inventory_truncated,
     unavailable_count=#out.unavailable,truncated_count=#out.truncated,sections=array()}
-for _,name in ipairs({'identity','health','attributes','skills','inventory','body','combat','affiliations'}) do
+for _,name in ipairs({'identity','health','attributes','skills','inventory','body','combat','condition','affiliations'}) do
     local partial=false
     for _,v in ipairs(out.unavailable) do if v.path:match('^'..name..'[%.%[]') or v.path==name then partial=true end end
     for _,v in ipairs(out.truncated) do if v.path:match('^'..name..'[%.%[]') or v.path==name then partial=true end end

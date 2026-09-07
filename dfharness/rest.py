@@ -39,15 +39,6 @@ def next_rest(workflow, view):
         )
     menu = view.get("menu")
 
-    def refused(facts):
-        return result(
-            "needs_input",
-            "The game refused to begin this rest; no retry was sent.",
-            {"blocker_kind": "rest_restricted", "facts": facts},
-        )
-
-    if ctx.get("refused"):
-        return refused(ctx["refused"])
     started = ctx.get("rest_started")
     until_dawn = action.get("until") == "dawn"
     dawn = state.get("dawn", {})
@@ -111,20 +102,6 @@ def next_rest(workflow, view):
         )
     pending = ctx.pop("pending", None)
     if pending:
-        if "report_cursor" in pending and not (menu and menu.get("kind") == "rest"):
-            denials = [
-                e
-                for e in view.get("reports", [])
-                if e["id"] > pending["report_cursor"] and e.get("type") == "CANNOT_REST"
-            ]
-            if denials:
-                event = denials[-1]
-                ctx["refused"] = {
-                    "report_id": event["id"],
-                    "type": event["type"],
-                    "message": event["text"],
-                }
-                return refused(ctx["refused"])
         expected = pending.get("expected")
         if expected and any(state.get(k) != v for k, v in expected.items()):
             return result(

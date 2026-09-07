@@ -1,5 +1,22 @@
 """Changes in native skill XP and stored attributes, separate from health ticking."""
 
+from copy import deepcopy
+
+
+def compact_progress(changes):
+    """Routine XP is one delta per skill; rank changes retain their new progress."""
+    out = deepcopy({k: v for k, v in changes.items() if k != "skills"})
+    xp, levels, records = {}, {}, {}
+    for name, change in changes.get("skills", {}).items():
+        if "xp" in change:
+            xp[name] = change["xp"]
+        if "level" in change:
+            levels[name] = {k: deepcopy(change[k]) for k in ("level", "progress") if k in change}
+        if "record" in change:
+            records[name] = change["record"]
+    out.update({k: v for k, v in (("xp", xp), ("levels", levels), ("records", records)) if v})
+    return out
+
 
 def _issues(sample, field):
     return [

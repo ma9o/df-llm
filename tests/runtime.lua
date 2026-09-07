@@ -136,6 +136,15 @@ test('renamed or wrongly typed keys do not masquerade as supported inputs',funct
     assert(#m.capabilities().features.posture.missing==1)
     env.df.interface_key.A_STANCE=0
 end)
+test('long-action phase does not invent stop or finish on the waiting-only prompt',function()
+    local r=m.action_prompt({rows={{text='   a Continue waiting   '}}})
+    assert(r.kind=='waiting_prompt' and #r.choices==1 and r.responses.continue=='OPTION1')
+    assert(not r.responses.finish and not r.responses.stop)
+    r=m.action_prompt({rows={{text='a Continue action'},{text='b Stop action'},{text='c Finish action'}}})
+    assert(r.kind=='action_prompt' and r.responses.finish=='OPTION3' and r.responses.stop=='OPTION2')
+    r=m.action_prompt({rows={{text='Something has changed'}}})
+    assert(r.kind=='unknown_action_prompt' and not r.responses and not r.response_verified and #r.choices==0)
+end)
 test('unknown executable versions do not inherit calculation verification',function()
     version='updated'
     local r=m.capabilities();assert(not r.calculations.available and r.calculations.reason)

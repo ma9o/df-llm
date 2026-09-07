@@ -85,9 +85,11 @@ These are measured payload sizes, not guaranteed limits or latency claims.
 Brief omits duplicate native counters, consumption history and calculation
 provenance; status retains them.
 
-Actions return **controller receipts** by default (`format: compact`, schema 2).
-Compact schema 2 was introduced in 0.11.0. Version 0.12.0 reduces internal
-traffic and adds action/environment coverage; the receipt contract is unchanged.
+Actions return **controller receipts** by default (`format: compact`, schema 3).
+Version 0.25.0 introduces compact schema 3: `changes.progress.xp` is a flat skill
+delta map, `levels` retains rank changes and their progress, and strike target
+conditions diff unchanged healthy detail against this dispatch's starting sample.
+Legacy schema 2 receipts still render, and comprehensive character schema 2 is unchanged.
 Full diagnostic records retain their `dispatch` structure.
 Read `values` and `said`, then `outcome`, field-level `changes`, and a concrete `blocker` when
 unfinished. The small readiness snapshot contains position, movement/input
@@ -324,9 +326,15 @@ dependency. The screen-buffer comparison lives only in the development tests.
 DFHack scripts can use the same helper directly:
 
 ```lua
-local load = dfhack.reqscript('dfharness/burden').getBurden(dfhack.world.getAdventurer())
+local helper = dfhack.reqscript('Z:/Users/ma9o/Desktop/df-llm/dfharness/burden')
+local load = helper.getBurden(dfhack.world.getAdventurer())
 -- load.capacity, load.load_penalty, load.burden
 ```
+
+Use your package's absolute path, or install the helper alone under
+`hack/scripts/dfharness/` to use the relative module name `dfharness/burden`.
+Do not register the repository root as a script search path: DFHack's module
+discovery also descends into reference clones and other development folders.
 
 The source is `dfhack_lua_unit_burden`; this extension performs the calculation
 inside DFHack using its APIs and native caches. Missing inputs, invalid caches,
@@ -351,8 +359,19 @@ truncated readings produce null. Contents IDs are bounded to 64 in the value.
 `changes.inventory.containers_removed` groups each departing container with the
 contents still observed inside it; standalone removals remain in `removed`.
 Strike values include the target's life state, posture, consciousness, blood,
-wound count, pain and exhaustion. Missing fields remain explicit. The target
+wound count, pain, exhaustion and native projectile state. A target propelled
+by a previous blow settles before the next strike opens its attack menu; this
+mechanical wait shares the dispatch's limits and interruption predicates.
+Missing fields remain explicit. The target
 reading accompanies the existing execution snapshot, without a full unit query.
+With a complete starting target sample, life state, consciousness, posture and
+wound count remain current; other changed fields appear in `target.changed`.
+Existing bleeding, impaired limbs, damaged parts and grapples remain explicit
+even when unchanged. A missing, incomplete or different-target baseline retains
+the full condition, rather than inventing a diff. Resumes use their new baseline.
+Active grapple counts remain readable on the installed build, but DFHack exposes
+the hold records as opaque shared pointers. Hold details are explicitly
+unavailable when present; an empty detail list must not imply freedom of movement.
 For a sequence, `assessment.load` reports current load once; individual item
 values omit repeated load blocks. Repeated strikes retain each attempt's effect
 and only the latest sampled condition for each target, attached to its stage.
@@ -484,7 +503,7 @@ applicable. Inventory observations expose the same item details.
 | `end_conversation()` | The conversation interface is closed |
 | `use_stairs(x, y, z, direction)` | Approach these observed stairs, then verify arrival exactly one level up or down |
 | `combat(unit_id, option_id=...)` | Approach and open the requested combat target; optionally select an offered native move; subsequent decisions and unverified effects return `needs_input` |
-| `strike(unit_id, body_part_id, item_id, attack_index, style)` | Execute one explicitly aimed melee attempt and verify its native strike/recovery phases; return attributed wounds, range failure, or unverified damage |
+| `strike(unit_id, body_part_id, item_id, attack_index, style)` | Execute one explicitly aimed melee attempt; return its wound, miss, defense, range, cancellation or explicitly unverified effect |
 
 `save-game NAME` writes a checkpoint through the game's Save and continue flow.
 Names accept 1–40 letters, digits, spaces, underscores and hyphens, starting
@@ -628,20 +647,37 @@ known aiming menu as necessary. It does not choose another weapon, limb or targe
 The native input receipt captures the exact queued attack ID before simulation
 continues. A bounded read-only observer verifies its preparation and recovery
 countdowns; it holds no native pointers and stops on world replacement or
-receipt eviction. An attack that disappears before verification returns a
-concrete blocker and is not repeated on resume. The observer is limited to
+receipt eviction. A vanished attack accompanied by an attributable player dodge
+or knockdown completes with `resolution=cancelled`, `recovered=false`, and a cause;
+there is no remaining swing to resume. Cancellation during recovery preserves the
+strike's effect and adds `recovery=cancelled`. An unexplained disappearance still
+returns a concrete blocker and is not repeated on resume. The observer is limited to
 8192 simulation ticks and 256 queued native actions. Existing pending attacks
 are returned to the controller instead of being mistaken for the new request.
 Comprehensive `status.activity.actions` also retains the native action payloads.
 
 Compact receipts put useful outcomes in `values` before the event log. A strike
-value reports `resolution=wounded` with newly attributed wound IDs,
-`out_of_range` from the native adventurer-only report, or `processed` with
-`damage=unverified`. Finishing an attempt does not promise injury or victory.
+value reports `resolution=wounded` with newly attributed wound IDs. Typed reports
+with an unambiguous English player subject can resolve `missed`, `dodged`,
+`blocked`, `parried`, or `out_of_range`; these explicitly say `source=report_text`
+and `language=en`. Reports before the strike interval, incoming attacks and
+ambiguous multiple player reports do not prove an outgoing result. Unknown or
+changed wording remains `processed` with `damage=unverified`. Cancellation can
+also use a native standing-to-prone transition in the disappearance interval.
+Finishing an attempt does not promise injury or victory.
 Damage inspection is bounded to 1024 target wounds and 512 new reports;
 unavailable evidence stays explicit. Sequence values include their stage index
 and are returned once across resumes. Full timing/selection evidence remains
 in `dispatch-details`; completed-stage bookkeeping is omitted from compact output.
+
+Native refusals are classified centrally for the active objective's last
+mechanical input. Standing, pickup/drawing, rest, climbing and campfire refusals
+use the game's text as the blocker reason, with its type and report ID as facts.
+Acknowledging an announcement does not lose that evidence. A completed stage's
+old refusal cannot label another stage, and a refusal cannot override a controller
+injury/visibility interruption. Resume verifies existing progress without replaying
+the refused input. Travel exceptions remain structured native state; range failure
+is a completed strike attempt, not a generic refusal.
 
 `combat` remains a menu-only objective. Its completed result means the requested
 target menu is open. Defense, wrestling, charge, multiattack and ranged completion
@@ -650,6 +686,9 @@ unknown modes retain ASCII text and an explicit limitation.
 
 `navigation` / `df_navigation` returns current travel coordinates, the native
 site travel grid, and character-known group/beast rumors sorted by distance.
+For the current lair, it also exposes the native site's entrance in absolute
+coordinates and, when loaded, local coordinates with visibility. This is labelled
+`source=native_site_metadata`; absent entrance records and failed reads differ.
 Rumors identify leads, not verified present enemies. The controller chooses the
 destination and assesses the inhabitants. `travel_to` follows the shortest
 available route through the current native site grid, then direct overland
@@ -904,13 +943,14 @@ from their report cursor, up to 4,096 per page, collecting remaining pages befor
 further input. A timeout retains that cursor for resume. Cursor resets and
 truncation are explicit; native report retention still limits available history.
 
-Lua modules load through DFHack's script path and `reqscript`; DFHack owns
+Lua modules load by absolute package paths through DFHack's `reqscript`; DFHack owns
 mtime checking and compilation. Each invocation builds fresh readers, without
 retaining native pointers. The host sends only the request and loader call,
 including on first use. There is no custom bundle cache or installation retry.
 The package parent is exposed through CrossOver's `Z:` drive on macOS. Set
 `DFLLM_SCRIPT_PATH` to that directory as seen by DFHack for another layout.
-The loader checks that another script path does not shadow this package.
+The loader verifies the exact entry path and supplies that package path to every
+dependency. It does not register the repository for global script discovery.
 Transport errors never trigger an automatic input retry. During a completed
 semantic dispatch, a stale-state rejection with explicit proof that no input was
 sent restores the last accepted checkpoint and replans from fresh native state.
@@ -924,6 +964,24 @@ last native snapshot and sends changed checkpoint fields; the complete final
 receipt remains available through `dispatch-details`. Stage planning reuses a
 verified snapshot when reader requirements are unchanged. Native input still
 revalidates the current menu, game state and execution lease.
+
+Strike observers and routes with report interruption predicates use scoped
+`eventful.onReport` subscriptions at frequency one. Bounded native cursor reads
+catch up if a callback is late or the plugin is unavailable/reloaded. Listeners
+are removed on completion, failure or map/world unload. Wound and blood readings
+remain native checks: the installed `onUnitAttack` callback missed a verified
+Adventure hit with empty unit combat logs, and blood loss has no dedicated event.
+Full evidence records contain callback/catch-up counts; compact receipts do not.
+
+Completed dispatches activate the installed, enabled `advtools.fastcombat`
+overlay while their submitted input processes. The overlay owns animation
+acceleration. The harness never changes simulation timers and still evaluates
+the controller's interruption predicates before acknowledging announcements.
+Incremental dispatches do not request acceleration. Capabilities report both
+optional adapters; missing or disabled overlays retain normal execution.
+See the [live reuse audit](docs/dfhack-reuse-review-2026-09-07.md) for verification
+and the limits of the other proposed DFHack helpers. Game mechanics can be
+searched offline through the [local wiki mirror](docs/local-wiki.md).
 
 While an input is processing, compact execution polls use a separate narrow
 sample: readiness/world identity, report pages and only the controller's

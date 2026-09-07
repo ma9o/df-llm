@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 from dfharness.cli import main
 from dfharness.rpc import BridgeError, DFHackError, DispatchError
-from dfharness.state import render_receipt
+from dfharness.state import compact_result, render_receipt, target_condition
+from dfharness.strike import next_strike
 from dfharness.workflows import validate_action
 from tests.support import Bridge
 from tests.support import FullClient as Client
@@ -82,6 +83,21 @@ def resolved(phase="finished"):
 
 
 class StrikeTests(unittest.TestCase):
+    def test_knockback_settles_before_opening_the_native_attack_menu(self):
+        before = combat()
+        before["target_unit"] = {**TARGET, "condition": {"projectile": True, "alive": True}}
+        workflow = {"action": ACTION, "context": {}}
+        planned = next_strike(workflow, before)
+        self.assertEqual(planned["input"], {"type": "wait"})
+        workflow["context"]["pending"] = planned["pending"]
+        blocked = next_strike(workflow, before)
+        self.assertEqual(blocked["outcome"], "no_effect")
+        self.assertEqual(workflow["context"]["pending"], planned["pending"])
+        after = deepcopy(before)
+        after["effect_id"] = "landed"
+        after["target_unit"]["condition"]["projectile"] = False
+        self.assertEqual(next_strike(workflow, after)["input"], {"type": "key", "key": "A_ATTACK"})
+
     def client(self, bridge):
         client = Client(port=1, execution={"mode": "complete", "acknowledge": True})
         p = patch.object(client, "request", side_effect=bridge)
@@ -189,6 +205,97 @@ class StrikeTests(unittest.TestCase):
         r = c.act(r["dispatch"]["resume_action"])
         self.assertEqual(r["dispatch"]["outcome"], "completed")
         self.assertEqual(len(b.inputs), 1)
+
+    def test_cancelled_swing_and_interrupted_recovery_complete_without_resume_or_restrike(self):
+        for struck in (False, True):
+            done = resolved("cancelled")
+            done["input_evidence"].update(
+                strike_observed=struck,
+                effect={
+                    "resolution": "missed" if struck else "cancelled",
+                    "cause": {
+                        "type": "COMBAT_JUMP_DODGE_STRIKE",
+                        "report_id": 12,
+                        "source": "report_text",
+                        "language": "en",
+                    },
+                    **({"recovery": "cancelled"} if struck else {}),
+                },
+            )
+            bridge = Bridge(combat("AIM_ATTACK", flags=["quick"]), [done])
+            r = self.client(bridge).act(ACTION, result_format="compact")
+            self.assertEqual(r["outcome"], "completed")
+            self.assertEqual(r["values"][0]["resolution"], "missed" if struck else "cancelled")
+            self.assertFalse(r["values"][0]["recovered"])
+            self.assertNotIn("resume", r)
+            self.assertEqual(len(bridge.inputs), 1)
+
+    def test_unknown_cancellation_proof_cannot_complete_an_attack(self):
+        for cause in ({}, {"type": "unknown", "source": "guess"}):
+            done = resolved("cancelled")
+            done["input_evidence"]["effect"] = {"resolution": "cancelled", "cause": cause}
+            bridge = Bridge(combat("AIM_ATTACK", flags=["quick"]), [done])
+            self.assertEqual(self.client(bridge).act(ACTION)["dispatch"]["outcome"], "no_effect")
+
+    def test_target_projection_diffs_against_this_dispatch_and_preserves_impairments(self):
+        before = {
+            "available": True,
+            "complete": True,
+            "alive": True,
+            "conscious": True,
+            "prone": False,
+            "dead": False,
+            "wounds": 0,
+            "blood_count": 1000,
+            "blood_max": 1000,
+            "functional_limbs": {"stand": [2, 2], "grasp": [2, 2]},
+            "exhaustion": 20,
+            "grapples": [],
+            "parts_with_status": [],
+        }
+        after = dict(before, exhaustion=40)
+        result = target_condition(after, before)
+        self.assertEqual(result["changed"], {"exhaustion": [20, 40]})
+        self.assertNotIn("blood_count", result)
+        self.assertEqual(result["wounds"], 0)
+        self.assertFalse(result["prone"])
+        self.assertLess(len(json.dumps(result)), len(json.dumps(after)) * 0.6)
+        hurt = dict(
+            before,
+            blood_count=500,
+            wounds=1,
+            functional_limbs={"stand": [1, 2]},
+            parts_with_status=[{"id": 3, "flags": ["bone_damage"]}],
+            grapples=[{"unit_id": 3}],
+        )
+        result = target_condition(hurt, hurt)
+        for key in (
+            "blood_count",
+            "blood_max",
+            "functional_limbs",
+            "parts_with_status",
+            "grapples",
+        ):
+            self.assertEqual(result[key], hurt[key])
+        for unknown in (None, {}, {"available": False}, dict(before, complete=False)):
+            self.assertEqual(target_condition(after, unknown), after)
+        # Resumed receipts use their new starting snapshot, not the original attempt.
+        initial, final = combat(), resolved()
+        initial["target_unit"] = dict(TARGET, condition=after)
+        final["dispatch"] = {
+            "outcome": "completed",
+            "details": {
+                "value": {
+                    "kind": "strike",
+                    "unit_id": 2,
+                    "target": dict(after, exhaustion=45),
+                }
+            },
+        }
+        self.assertEqual(
+            compact_result(final, initial)["values"][0]["target"]["changed"],
+            {"exhaustion": [40, 45]},
+        )
 
     def test_lost_submission_reply_recovers_evidence_from_the_native_checkpoint(self):
         b = Bridge(combat("AIM_ATTACK", flags=["quick"]), [resolved()])

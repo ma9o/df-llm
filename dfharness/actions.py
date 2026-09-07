@@ -13,7 +13,7 @@ ACTION_HELP = {
     "wield": "Hold item_id as a weapon; replacements and their disposition must be explicit. Returns equipment location and resulting load.",
     "pickup": "Approach and acquire item_id with its contents. Returns location, contents integrity and resulting load.",
     "remove": "Remove item_id into a hand. Returns location and resulting load; does not select other equipment to discard.",
-    "strike": "Attempt one aimed melee strike using the chosen body_part_id, item_id, attack_index and style. Native attempt/recovery verification is separate from damage. Returns target blood, consciousness, functional limbs, damaged parts and grapples with coverage bounds. Obtain body-part IDs with unit; weapon attack indices with item.",
+    "strike": "Attempt one aimed melee strike using body_part_id, item_id, attack_index and style. Returns wounded, missed, dodged, blocked, parried, out_of_range, cancelled, or explicitly unverified damage. Cancellation completes an attempt; recovered=false distinguishes interrupted recovery. Report-text attribution is labelled and conservative. Target condition preserves current impairments and diffs other fields. Obtain body-part IDs with unit; weapon attack indices with item.",
     "combat": "Open the target's native combat choices. This is discovery/navigation; use strike to execute a complete aimed attack.",
     "sequence": "Execute explicit semantic actions in order under one completion policy, interruption policy and budget. Resume preserves completed stages. Item prerequisites are handled inside their stages.",
     "converse": "Visit explicit unit_ids, ask explicit topics and collect replies. A topic may include tact and subject_hf_id. Return only when completed or an undelegated choice is needed.",

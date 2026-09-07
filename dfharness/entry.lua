@@ -5,15 +5,19 @@
 local assets={bridge='bridge',glyph='cp437',interactions='interactions',ui='native_ui',
     guard='input_guard',runtime='runtime',reports='reports',environment='environment',
     movement='movement',wire='wire',session='session',screen='screen',items='items',
-    rest='rest',aim='aim',saving='saving',health='health',progress='progress',attack='attack',burden='burden',pathing='pathing'}
+    rest='rest',aim='aim',saving='saving',health='health',progress='progress',attack='attack',burden='burden',pathing='pathing',
+    report_events='report_events',fastcombat='fastcombat'}
 
-function request(payload)
+function request(payload,package_path)
+    assert(type(package_path)=='string' and package_path:sub(-1)=='/'
+        and (package_path:sub(1,1)=='/' or package_path:match('^%a:/')),
+        'DF-LLM requires an absolute package path')
     dfhack.df_llm_json_null=dfhack.df_llm_json_null or {}
     local null=dfhack.df_llm_json_null
     local req=require('json.internal'):new{strictTypes=true}:decode(payload,nil,{null=null})
     local modules={}
     local function include(key,name)
-        local factory=dfhack.reqscript('dfharness/'..name).factory
+        local factory=dfhack.reqscript(package_path..name).factory
         assert(type(factory)=='function','DF-LLM module has no factory: '..name)
         modules[key]=factory
     end

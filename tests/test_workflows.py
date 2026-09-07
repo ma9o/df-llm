@@ -139,7 +139,7 @@ class WorkflowTests(unittest.TestCase):
                         d["details"]["facts"],
                         {
                             "item_id": 2,
-                            "native_refusal": "NO_GRASP_FOR_PICKUP",
+                            "type": "NO_GRASP_FOR_PICKUP",
                             "report_id": 11,
                             "held_item_ids": [8, 9],
                         },

@@ -4,7 +4,7 @@ from collections import Counter
 from copy import deepcopy
 from typing import Any
 
-from .character_progress import progress_changes
+from .character_progress import compact_progress, progress_changes
 from .events import project_events
 from .views import pick, reading_coatings, reading_menu
 
@@ -250,7 +250,7 @@ def state_changes(before, view, ticks):
         delta = field_changes(pick(initial, (key,)), pick(final, (key,)))
         changes.update(delta)
     if advancement := progress_changes(before, view):
-        changes["progress"] = advancement
+        changes["progress"] = compact_progress(advancement)
     status = field_changes(
         pick(before.get("status", {}), ("map_origin", "mode", "adventurer_id", "save", "travel")),
         pick(view.get("status", {}), ("map_origin", "mode", "adventurer_id", "save", "travel")),
@@ -354,6 +354,36 @@ def objective_values(dispatch, reported_stage=-1):
     return values, latest
 
 
+def target_condition(current, previous):
+    """Keep current reassessment facts; diff other readings against this dispatch."""
+    if not all(
+        isinstance(sample, dict)
+        and sample.get("available") is True
+        and sample.get("complete") is True
+        for sample in (current, previous)
+    ):
+        return deepcopy(current)
+    always = {"available", "complete", "alive", "conscious", "prone", "projectile", "wounds"}
+    # Stable impairments still matter to the next decision. Do not compact an
+    # already crippled or bleeding opponent into an apparently healthy one.
+    if current.get("blood_count") != current.get("blood_max"):
+        always.update(("blood_count", "blood_max"))
+    for key in ("grapples", "parts_with_status"):
+        if current.get(key):
+            always.add(key)
+    for counts in current.get("functional_limbs", {}).values():
+        if isinstance(counts, list) and len(counts) == 2 and counts[0] != counts[1]:
+            always.add("functional_limbs")
+    out = pick(current, always)
+    delta = field_changes(
+        {k: v for k, v in previous.items() if k not in always},
+        {k: v for k, v in current.items() if k not in always},
+    )
+    if delta:
+        out["changed"] = delta
+    return out
+
+
 def compact_result(
     view, before, event_detail="task", seen_reply_ids=(), event_cursor=None, reported_value_stage=-1
 ):
@@ -368,7 +398,7 @@ def compact_result(
         else event_cursor
     )
     said, represented = speech_result(dispatch, seen_reply_ids)
-    result: dict[str, Any] = {"format": "compact", "schema_version": 2, "outcome": outcome}
+    result: dict[str, Any] = {"format": "compact", "schema_version": 3, "outcome": outcome}
     if said:
         result["said"] = said
     values, _ = objective_values(dispatch, reported_value_stage)
@@ -388,6 +418,14 @@ def compact_result(
                     value.pop("target")
                 latest_targets.add(value["unit_id"])
     if values:
+        prior = before.get("target_unit") or {}
+        for value in values:
+            if (
+                value.get("kind") == "strike"
+                and "target" in value
+                and value["unit_id"] == prior.get("id")
+            ):
+                value["target"] = target_condition(value["target"], prior.get("condition"))
         result["values"] = values
     result.update(
         dispatch_id=dispatch.get("id"),

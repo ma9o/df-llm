@@ -1,4 +1,4 @@
-"""Small RPC requests backed by DFHack's script-path and mtime loader."""
+"""Small RPC requests using DFHack's mtime loader for explicit package paths."""
 
 import json
 import os
@@ -33,15 +33,19 @@ class Program:
 
     def render(self):
         return (
-            "local root=" + lua_string(self.root) + ";assert(dfhack.filesystem.isdir(root),"
+            "local root=" + lua_string(self.root) + ";root=root:gsub('\\\\','/'):gsub('/+$','');"
+            "assert(root:sub(1,1)=='/' or root:match('^%a:/'),"
+            "'DFLLM_SCRIPT_PATH must be absolute');assert(dfhack.filesystem.isdir(root),"
             "'DF-LLM script path unavailable; set DFLLM_SCRIPT_PATH to the package parent');"
-            "dfhack.internal.addScriptPath(root,true);"
+            "local package_path=root..'/dfharness/';"
             "local function norm(p) p=p:gsub('\\\\','/');"
             "return dfhack.getOSType()=='windows' and p:lower() or p end;"
-            "local path=dfhack.findScript('dfharness/entry');"
-            "assert(path and norm(path)==norm(root..'/dfharness/entry.lua'),"
-            "'Another script path shadows this DF-LLM package');"
-            "dfhack.reqscript('dfharness/entry').request(" + lua_string(self.request) + ")"
+            "local path=dfhack.findScript(package_path..'entry');"
+            "assert(path and norm(path)==norm(package_path..'entry.lua'),"
+            "'DF-LLM package entry unavailable');"
+            "dfhack.reqscript(package_path..'entry').request("
+            + lua_string(self.request)
+            + ",package_path)"
         )
 
 

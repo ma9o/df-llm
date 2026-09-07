@@ -70,6 +70,7 @@ function M.start(e,_,request,session,receipt)
     local types={};for _,name in ipairs(rules.report_types or {})do types[name]=true end
     local reports=df.global.world.status.reports
     local cursor=#reports>0 and reports[#reports-1].id or -1
+    local stream
     local function watch()
         local s={mode='adventure',map_loaded=dfhack.isMapLoaded(),adventurer_id=e.unit_id}
         local r={status=s}
@@ -83,18 +84,20 @@ function M.start(e,_,request,session,receipt)
         if request.watch_units then r.watched_units=h.health.read(request.watch_units,s.map_loaded) end
         if next(types)then
             r.reports={}
-            local list=df.global.world.status.reports
-            local count=0
-            for i=#list-1,0,-1 do
-                local report=list[i];if report.id<=cursor then break end
-                count=count+1;assert(count<=4096,'Native path report watch exceeds 4096 records')
-                local kind=df.announcement_type[report.type]
-                if types[kind] then r.reports[#r.reports+1]={id=report.id,type=kind} end
+            -- The initial baseline shares the cursor's suspended core call.
+            -- Subsequent reads use the adapter's bounded, copied report window.
+            if stream then
+                local list,err=stream:window(cursor);assert(list,err)
+                for _,report in ipairs(list)do
+                    if types[report.type]then r.reports[#r.reports+1]={id=report.id,type=report.type}end
+                end
             end
         end
         return r
     end
     local baseline=watch()
+    stream=next(types) and h.report_events.watch(cursor,4096)
+    if stream then e.report_observer=stream.stats end
     local function owned(u)
         return u.path.goal==df.unit_path_goal.AdventureAutomove and equal(absolute(u.path.dest),e.destination)
     end
@@ -108,6 +111,7 @@ function M.start(e,_,request,session,receipt)
             end
         end
         e.phase=phase;e.reason=why;e.watch_view=sample
+        if stream then stream:close()end
         if u then e.position=absolute(u.pos)end
         receipt.settled=true
     end

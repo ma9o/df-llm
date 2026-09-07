@@ -32,9 +32,12 @@ def native_fixtures(port):
         ("aim.lua", "aim.lua"),
         ("saving.lua", "saving.lua"),
         ("health.lua", "health.lua"),
+        ("unit.lua", "unit.lua"),
         ("progress.lua", "progress.lua"),
         ("attack.lua", "attack.lua"),
         ("reports.lua", "reports.lua"),
+        ("report_events.lua", "report_events.lua"),
+        ("fastcombat.lua", "fastcombat.lua"),
         ("environment.lua", "environment.lua"),
         ("movement.lua", "movement.lua"),
         ("pathing.lua", "pathing.lua"),
@@ -50,7 +53,9 @@ def native_fixtures(port):
             "movement.lua": ["native_ui.lua"],
             "aim.lua": ["native_ui.lua"],
             "health.lua": ["wire.lua"],
+            "attack.lua": ["report_events.lua"],
             "character_calculations.lua": ["burden.lua"],
+            "character_profiles.lua": ["health.lua"],
         }
         arguments = [
             lua_string((ASSETS / name).read_text())

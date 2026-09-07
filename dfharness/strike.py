@@ -90,19 +90,34 @@ def next_strike(workflow, view):
             "recovery_observed": evidence.get("recovery_observed"),
             **evidence.get("latest", {}),
         }
-        if (
+        finished = (
             evidence.get("phase") == "finished"
             and evidence.get("strike_observed") is True
             and evidence.get("recovery_observed") is True
-        ):
+        )
+        cancelled = (
+            evidence.get("phase") == "cancelled"
+            and evidence.get("tracking") is False
+            and isinstance(evidence.get("effect", {}).get("cause"), dict)
+            and isinstance(evidence["effect"]["cause"].get("type"), str)
+            and evidence["effect"]["cause"].get("source") in ("report_text", "native_unit_flags")
+            and (
+                evidence["effect"].get("resolution") == "cancelled"
+                or (
+                    evidence.get("strike_observed") is True
+                    and evidence["effect"].get("recovery") == "cancelled"
+                )
+            )
+        )
+        if finished or cancelled:
             return result(
                 "completed",
-                "The requested native strike attempt and recovery finished; reports describe its effects.",
+                "The native attack ended; its value distinguishes the strike and recovery outcomes.",
                 {
                     "value": {
                         "kind": "strike",
                         "unit_id": unit_id,
-                        "recovered": True,
+                        "recovered": finished,
                         "target": condition,
                         **{
                             k: v
@@ -170,6 +185,14 @@ def next_strike(workflow, view):
     if pending and pending["kind"] == "walk":
         if blocker := verify_walk(pending, view):
             return blocker
+    elif pending and pending["kind"] == "settle_target":
+        if pending["effect"] == view.get("effect_id"):
+            ctx["pending"] = pending
+            return blocked(
+                "attack_target_in_flight",
+                "Waiting did not advance the target's native knockback; no input was repeated.",
+                outcome="no_effect",
+            )
     elif pending and pending["kind"] == "style":
         if menu.get("mode") != "AIM_ATTACK" or menu.get("target_unit_id") != unit_id:
             return blocked(
@@ -189,6 +212,17 @@ def next_strike(workflow, view):
             "The native combat decision did not change; input was not repeated.",
             outcome="no_effect",
         )
+
+    if condition.get("projectile") is True:
+        if not view["status"].get("can_move"):
+            return blocked(
+                "attack_target_in_flight",
+                "The target is being propelled; close the current interface before waiting.",
+            )
+        return {
+            "input": {"type": "wait"},
+            "pending": {"kind": "settle_target", "effect": view.get("effect_id")},
+        }
 
     if menu.get("open"):
         mode = menu.get("mode")

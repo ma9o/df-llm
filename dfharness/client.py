@@ -120,7 +120,7 @@ class Client:
         transport = {
             "rpc_calls": 1,
             "request_bytes": len(source.encode()),
-            "loader": "dfhack_script_path",
+            "loader": "dfhack_reqscript_absolute",
         }
         recorder = active().recorder
         with recorder.rpc(request.get("op", "unknown"), transport["request_bytes"]) as sample:
@@ -342,7 +342,7 @@ class Client:
 
 
 def render_observation(observation):
-    if observation.get("format") == "compact" and observation.get("schema_version") == 2:
+    if observation.get("format") == "compact" and observation.get("schema_version") in (2, 3):
         from .state import render_receipt
 
         return render_receipt(observation)

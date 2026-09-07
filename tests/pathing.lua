@@ -2,7 +2,7 @@ local source=...
 local names={}
 local function test(name,fn)local ok,e=pcall(fn);assert(ok,name..': '..tostring(e));names[#names+1]=name end
 local function fixture()
-    local f={now=0,queue={},inputs={},cancels=0,allocations=0,focus={'dungeonmode/Default'},blood=100,visible={1}}
+    local f={now=0,queue={},inputs={},cancels=0,allocations=0,focus={'dungeonmode/Default'},blood=100,visible={1},report_window={},closed=0}
     local u={id=1,pos={x=1,y=1,z=0},path={dest={x=-30000,y=-30000,z=-30000},goal=0},dungeon_control=0}
     f.unit=u
     local function coord()
@@ -44,6 +44,11 @@ local function fixture()
                 f.queue[#f.queue+1]=fn;return #f.queue
             end}}, {__index=_ENV})
     f.api=assert(load(source,'native-path-fixture','t',env))({same=same,
+        report_events={watch=function(_,limit)
+            assert(limit==4096)
+            return {stats={},window=function()return f.report_window end,
+                close=function()f.closed=f.closed+1 end}
+        end},
         input=function(key)f.inputs[#f.inputs+1]=key end,
         health={player=function()return {health={blood_count=f.blood}}end},
         movement={visible_units=function()
@@ -67,6 +72,12 @@ test('native path command and completion use named interfaces with one input',fu
     assert(f.e.phase=='running' and not f.receipt.settled)
     f.unit.pos.x=8;f.unit.path.goal=0;f.unit.dungeon_control=0;f:tick()
     assert(f.e.phase=='completed' and f.receipt.settled and f.cancels==0)
+end)
+test('eventful report windows retain named types and close on a route interruption',function()
+    local f=fixture();f.request.path_execution.interrupt_on={report_types={'COMBAT_STRIKE_DETAILS'}}
+    f:start();f.report_window={{id=3,type='COMBAT_STRIKE_DETAILS',text='a strike'}};f:tick()
+    assert(f.e.phase=='paused' and f.e.reason=='watch_changed' and f.closed==1)
+    assert(f.e.watch_view.reports[1].type=='COMBAT_STRIKE_DETAILS' and f.e.watch_view.reports[1].id==3)
 end)
 test('watch changes pause for shared policy without inferring whether they are threats',function()
     local f=fixture();f.request.path_execution.interrupt_on={blood_loss=true};f:start()

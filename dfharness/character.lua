@@ -507,6 +507,7 @@ if helpers.details_reader then
     return helpers.details_reader(u,out,{array=array,text=text,read=read,fields=fields,list=list,flags=flags,
         label=label,named_reference=named_reference,unavailable=unavailable,caste=caste,ui=helpers.ui,status=helpers.status,
         calculations=helpers.calculations,interfaces=helpers.interfaces,next_dawn=helpers.next_dawn,burden=helpers.burden,
+        health=helpers.health,
         profile=helpers.profile,requested=requested})
 end
 return out

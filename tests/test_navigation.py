@@ -39,7 +39,9 @@ class NavigationTests(unittest.TestCase):
         )
         b = Bridge(before, [after])
         r = self.client(b).act({"type": "set_posture", "posture": "standing"})
-        self.assertEqual(r["dispatch"]["outcome"], "no_effect")
+        self.assertEqual(r["dispatch"]["outcome"], "needs_input")
+        self.assertEqual(r["dispatch"]["blocker"]["kind"], "native_refusal")
+        self.assertEqual(r["dispatch"]["reason"], "Somebody is in the way.")
         self.assertEqual(r["dispatch"]["events"], after["reports"])
         self.assertEqual(len(b.inputs), 1)
 

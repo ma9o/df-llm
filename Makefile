@@ -1,4 +1,4 @@
-PYTHON_SOURCES := dfharness tests dfctl dfhack-run
+PYTHON_SOURCES := dfharness tests tools dfctl dfhack-run
 
 .PHONY: build check dead-code format format-check lint lint-fix lua-check shell-check sync test type-check
 

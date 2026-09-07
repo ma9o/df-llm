@@ -97,6 +97,24 @@ function M.acknowledgement_key(modal)
         if type(df.interface_key[key])=='number' then return key end
     end
 end
+function M.action_prompt(ui)
+    -- TAKING_TOO_LONG_INPUT has more than one prompt. The loop tag does not
+    -- establish which responses the game offers. This adapter is scoped to
+    -- that native phase and uses the currently rendered ASCII button labels.
+    local labels={}
+    for _,row in ipairs(ui.rows)do labels[row.text:match('^%s*(.-)%s*$')]=true end
+    if labels['a Continue waiting']then
+        return {kind='waiting_prompt',dismissible=false,response_verified=true,
+            source='ascii_prompt_labels',choices={'Continue waiting'},responses={continue='OPTION1'}}
+    end
+    if labels['a Continue action'] and labels['b Stop action'] and labels['c Finish action']then
+        return {kind='action_prompt',dismissible=false,response_verified=true,source='ascii_prompt_labels',
+            choices={'Continue action','Stop action','Finish action'},
+            responses={continue='OPTION1',stop='OPTION2',finish='OPTION3'}}
+    end
+    return {kind='unknown_action_prompt',dismissible=false,response_verified=false,choices=h.array(),
+        reason='The native long-action phase has no recognized response labels'}
+end
 local requirements={
     announcements={
         {path='df.global.world.status.popups',type='vector'},
@@ -244,6 +262,8 @@ function M.capabilities()
             native_modes={'UNIT_CHOICE','CONFIRM','MOVE_CHOICE','AIM_TARGET','AIM_ATTACK'},
             strike='Explicit single aimed melee attempt, native style keys and bounded action-phase observer',
             limitation='Charge, multiattack, wrestling, defense and ranged completion remain unsupported'}}
+    if h.report_events then out.adapters.report_events=h.report_events.support()end
+    if h.fastcombat then out.adapters.fastcombat=h.fastcombat.support()end
     if h.calculations then
         local r=out.runtime
         local supported=h.calculations.supported(r.df_version,r.os,r.pe_timestamp)

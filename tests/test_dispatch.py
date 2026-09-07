@@ -11,6 +11,7 @@ HELP = {"kind": "help", "button": "Okay", "dismissible": True}
 MORE = {"kind": "announcement", "button": "More", "dismissible": True}
 OKAY = {"kind": "announcement", "button": "Okay", "dismissible": True}
 LONG = {"kind": "action_prompt", "dismissible": False}
+WAITING = {"kind": "waiting_prompt", "dismissible": False, "responses": {"continue": "OPTION1"}}
 
 
 def view(effect, modal=None, reports=()):
@@ -31,6 +32,11 @@ def report(number):
 
 
 class DispatchTests(unittest.TestCase):
+    def test_only_completed_dispatches_delegate_presentation_acceleration(self):
+        for mode in ("step", "complete"):
+            _, inputs = self.scripted([view("after")], policy={"mode": mode})
+            self.assertEqual(inputs[0].get("fastcombat", False), mode == "complete")
+
     def test_delegated_dismiss_uses_the_native_guard_for_fully_decoded_help(self):
         before = view("native-help", HELP)
         before["ui_state_id"] = "u2:blinking-background"
@@ -108,11 +114,22 @@ class DispatchTests(unittest.TestCase):
         return result["dispatch"], inputs
 
     def test_incremental_mode_leaves_undelegated_prompts(self):
-        for modal in (HELP, LONG, {"kind": "confirmation", "button": "Yes"}):
+        for modal in (HELP, LONG, WAITING, {"kind": "confirmation", "button": "Yes"}):
             with self.subTest(modal=modal):
                 result, inputs = self.scripted([view("prompt", modal)])
                 self.assertEqual(result["outcome"], "needs_input")
                 self.assertEqual(len(inputs), 1)
+
+    def test_complete_continues_a_waiting_only_prompt_without_inventing_finish(self):
+        result, inputs = self.scripted(
+            [view("waiting1", WAITING), view("waiting2", WAITING), view("done")],
+            policy={"mode": "complete"},
+            action={"type": "resume"},
+        )
+        self.assertEqual(result["outcome"], "completed")
+        self.assertEqual(
+            [r["action"] for r in inputs], [{"type": "action_prompt", "choice": "continue"}] * 2
+        )
 
     def test_complete_handles_pages_then_finishes_without_continues(self):
         result, inputs = self.scripted(

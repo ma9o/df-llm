@@ -292,7 +292,7 @@ def parser():
         "--option-id", help="Explicit native move ID; further decisions are returned"
     )
     actions["strike"] = subs.add_parser(
-        "strike", help="Perform one explicitly aimed melee strike and verify its native recovery"
+        "strike", help="Attempt an aimed melee strike and report its effect or cancellation"
     )
     actions["strike"].add_argument("unit_id", type=int)
     actions["strike"].add_argument("--body-part-id", type=int, required=True)

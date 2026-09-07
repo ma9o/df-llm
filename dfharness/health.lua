@@ -4,6 +4,45 @@ local function build(...)
 -- Explicit unit-health watches. Bounded native reads; no affiliation inference.
 local h=...
 local M={}
+function M.creature_flags(unit,names)
+    local out={available=true,flags={}}
+    local ok,caste=pcall(dfhack.units.getCasteRaw,unit)
+    local masks_ok,masks=pcall(function()
+        local result={}
+        for _,key in ipairs({'uwss_add_caste_flag','uwss_remove_caste_flag'})do
+            local flags={}
+            for name,value in pairs(unit[key])do
+                if type(name)=='string' then
+                    assert(type(value)=='boolean','Invalid native creature modifier flag')
+                    flags[name]=value
+                end
+            end
+            result[key]=flags
+        end
+        return result
+    end)
+    for _,name in ipairs(names or {'NOSTUN','NOPAIN','NOBREATHE','NOEXERT','NOT_LIVING'})do
+        local success,value=pcall(function()
+            assert(ok and caste,'Native caste is unavailable')
+            assert(masks_ok,'Native creature modifier masks are unavailable')
+            local base=caste.flags[name]
+            assert(type(base)=='boolean','Native creature flag is unavailable')
+            -- Not every caste flag has a modifier bit (e.g. DIURNAL). Read
+            -- the exposed masks instead of assuming all flag sets are identical.
+            local added=masks.uwss_add_caste_flag[name] or false
+            local removed=masks.uwss_remove_caste_flag[name] or false
+            -- Same precedence as Units.cpp IS_ACTIVE_CASTE_FLAG.
+            return not removed and (added or base)
+        end)
+        if success then out.flags[name]=value
+        else
+            out.unavailable=out.unavailable or {}
+            out.unavailable[name]=tostring(value):sub(1,180)
+        end
+    end
+    out.complete=out.unavailable==nil
+    return out
+end
 function M.condition(unit)
     local out={available=true}
     local function read(field,fn)
@@ -51,6 +90,11 @@ function M.combat_condition(unit)
         assert(type(value)=='number' and value>=0 and value%1==0,'Invalid native limb count')
         return value
     end
+    read('projectile',function()
+        local flag=unit.flags1.projectile
+        assert(type(flag)=='boolean','Native projectile state is unavailable')
+        return flag
+    end)
     read('functional_limbs',function()
         local limbs={}
         for _,kind in ipairs({'stand','grasp','fly'})do
@@ -83,9 +127,13 @@ function M.combat_condition(unit)
     end)
     read('grapples',function()
         local list=unit.status.wrestle_items
+        out.grapple_count=count(#list)
         local result=h.array()
         for i=0,math.min(#list,16)-1 do
             local grip=list[i]
+            if grip._kind=='primitive' then
+                error('DFHack exposes the active grapple count, but its shared-pointer hold records are opaque',0)
+            end
             local state=df.wrestle_state_type[grip.state]
             assert(type(state)=='string','Unknown native wrestle state')
             for _,name in ipairs({'unit','self_bp','other_bp','item1','item2','advantage'})do

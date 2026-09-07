@@ -29,7 +29,8 @@ class ProgramTests(unittest.TestCase):
     def test_every_request_uses_the_native_loader_without_shipping_source(self):
         for op in ("status", "observe", "character_status", "character_brief", "act"):
             program = prepare_program({"op": op})
-            self.assertIn("dfhack.reqscript('dfharness/entry')", program.render())
+            self.assertIn("dfhack.reqscript(package_path..'entry')", program.render())
+            self.assertNotIn("addScriptPath", program.render())
             self.assertNotIn("df_llm_programs", program.render())
             self.assertLess(len(program.render()), 1000)
         first = prepare_program({"op": "poll", "dispatch_id": "first"})

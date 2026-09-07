@@ -33,7 +33,10 @@ local bindings=ui_reader({array=array,text=text,
     normalize_ui=function()gui.simulateInput(dfhack.gui.getCurViewscreen(true),{})end})
 local aim=modules.aim({array=array,text=text,bindings=bindings})
 local interactions=interaction_reader and interaction_reader({array=array,text=text,bindings=bindings,aim=aim})
-local runtime=runtime_reader({array=array,text=text,bindings=bindings,calculations=character_calculations})
+local report_events=modules.report_events()
+local fastcombat=modules.fastcombat()
+local runtime=runtime_reader({array=array,text=text,bindings=bindings,calculations=character_calculations,
+    report_events=report_events,fastcombat=fastcombat})
 local screen_reader=modules.screen({array=array,glyph=glyph})
 local read_reports=modules.reports({array=array,text=text})
 local environment=modules.environment({array=array})
@@ -45,11 +48,11 @@ local item_reader=modules.items({array=array})
 local rest=modules.rest({array=array,bindings=bindings})
 local saving=modules.saving({array=array,text=text,bindings=bindings,
     input=function(key)gui.simulateInput(dfhack.gui.getCurViewscreen(true),key)end})
-local attack=modules.attack({array=array,bindings=bindings,copy=wire.clone})
+local attack=modules.attack({array=array,bindings=bindings,copy=wire.clone,report_events=report_events})
 local input_registered=false
 local lifetime=modules.session()
 local session=lifetime.open()
-local pathing=modules.pathing({health=health,movement=movement,
+local pathing=modules.pathing({health=health,movement=movement,report_events=report_events,
     same=function(a,b)return not next(wire.delta(a,b))end,
     input=function(key)gui.simulateInput(dfhack.gui.getCurViewscreen(true),key)end})
 
@@ -160,21 +163,11 @@ local function status(ui)
                 for _,row in ipairs(ui.rows) do labels[row.text:match('^%s*(.-)%s*$')]=true end
                 if labels.More or labels.Okay then
                     out.modal={kind='announcement',button=labels.More and 'More' or 'Okay',dismissible=true}
-                else
-                    local combined={}
-                    for _,row in ipairs(ui.rows) do combined[#combined+1]=row.text end
-                    local contents=table.concat(combined,'\n')
-                    if contents:find('a Continue action',1,true) and contents:find('b Stop action',1,true)
-                        and contents:find('c Finish action',1,true) then
-                        out.modal={kind='action_prompt',dismissible=false,response_verified=false,
-                            choices={'Continue action','Stop action','Finish action'}}
-                    end
                 end
             end
         end
         if phase=='TAKING_TOO_LONG_INPUT' and not out.modal then
-            out.modal={kind='action_prompt',dismissible=false,response_verified=false,
-                choices={'Continue action','Stop action','Finish action'}}
+            out.modal=runtime.action_prompt(ui or ui_rows())
         end
         if not out.modal and (a.offload_timer>0 or a.long_action_duration>0 or a.sleeping~=0 or a.wait_timer>0
             or out.travel.activity.active) then
@@ -243,6 +236,31 @@ local function navigation_info(s,with_leads)
         if p.x>=site.global_min_x*3 and p.x<=site.global_max_x*3+2
             and p.y>=site.global_min_y*3 and p.y<=site.global_max_y*3+2 then
             out.current_site=site_info(site)
+            if site.type==df.world_site_type.LairShrine then
+                local ok,entrance=pcall(function()
+                    local info=site.subtype_info
+                    if not info then return {available=true,present=false} end
+                    local e={x=info.entrance_x,y=info.entrance_y,z=info.entrance_z}
+                    if e.x<0 or e.y<0 or e.z==-1000000 then return {available=true,present=false} end
+                    local result={available=true,present=true,source='native_site_metadata',absolute=e,
+                        lair_type=df.lair_type[info.lair_type] or tostring(info.lair_type)}
+                    if s.map_origin and s.map_size then
+                        local local_pos={}
+                        local loaded=true
+                        for _,k in ipairs({'x','y','z'})do
+                            local_pos[k]=e[k]-s.map_origin[k]
+                            loaded=loaded and local_pos[k]>=0 and local_pos[k]<s.map_size[k]
+                        end
+                        result.loaded=loaded
+                        if loaded then
+                            result.position=local_pos
+                            result.visible=dfhack.maps.isTileVisible(local_pos.x,local_pos.y,local_pos.z)
+                        end
+                    end
+                    return result
+                end)
+                out.current_site.entrance=ok and entrance or {available=false,reason=tostring(entrance):sub(1,240)}
+            end
             local r=site.realization
             local b=out.current_site.bounds
             local w,h=b.x2-b.x1+1,b.y2-b.y1+1
@@ -908,9 +926,9 @@ local function act()
         -- Observe/wait and apply the controller's dispatch policy, without
         -- resubmitting the original game input.
     elseif a.type=='action_prompt' then
-        check(s.modal and s.modal.kind=='action_prompt','No Continue/Stop/Finish prompt is present')
-        key=({continue='OPTION1',stop='OPTION2',finish='OPTION3'})[a.choice]
-        check(key~=nil,'choice must be continue, stop, or finish')
+        check(s.modal and s.modal.responses,'No recognized action prompt is present')
+        key=s.modal.responses[a.choice]
+        check(key~=nil,'The current action prompt does not offer the requested response')
     elseif a.type=='click' then
         integer(a.x,0,df.global.gps.dimx-1,'x');integer(a.y,0,df.global.gps.dimy-1,'y')
     elseif a.type=='select_unit' then
@@ -1070,6 +1088,7 @@ local function act()
         end
         dfhack.timeout(2,'frames',settle_travel)
     else dfhack.timeout(2,'frames',function() receipt.settled=true end) end
+    if ok then fastcombat.arm(session,req,receipt)end
     return {action_id=req.request_id,accepted=ok,error=receipt.error,
         workflow_revision=receipt.workflow_revision,
         input_key=key,ui_adjustment=receipt.ui_adjustment,
@@ -1089,8 +1108,7 @@ local function dispatch()
             out.reason='Unit is not currently loaded and visible';return out
         end
         check(type(unit_reader)=='function','Unit reader was not supplied by this client')
-        out.unit=unit_reader(u,character_base(u,true),{array=array,text=text})
-        out.unit.condition=health.combat_condition(u)
+        out.unit=unit_reader(u,character_base(u,true),{array=array,text=text,health=health})
         out.available=true;return out
     elseif req.op=='navigation' then
         local ui=ui_rows();local s=status(ui)
@@ -1108,7 +1126,7 @@ local function dispatch()
         check(type(character_calculations)=='table','Character calculations were not supplied by this client')
         result.character=character_reader(u,character_base(u,true,brief),{array=array,text=text,ui=ui,status=s,
             interfaces=interfaces(s,ui),next_dawn=not brief and rest.dawn(s) or nil,
-            details_reader=character_details,calculations=character_calculations,burden=burden,
+            details_reader=character_details,calculations=character_calculations,burden=burden,health=health,
             profile=brief and 'brief' or nil})
         result.available=true
         return result
@@ -1219,6 +1237,7 @@ local function dispatch()
         check(not req.action_id or receipt,'Unknown action receipt (game restarted or receipt expired)')
         local running=req.dispatch_id and session.dispatches[req.dispatch_id]
         local response={ready=s.ready_for_input and (not receipt or receipt.settled),status=not req.observe and s or nil,
+            presentation=receipt and receipt.presentation,
             interrupted=running and (running.interrupted or session.active_dispatch~=req.dispatch_id) or false,
             action_error=receipt and receipt.error,
             world_changed=running and not lifetime.matches(running,session) or nil}
