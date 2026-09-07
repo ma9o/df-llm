@@ -2,7 +2,6 @@
 
 from copy import deepcopy
 
-from .policy import MAX_DISPATCH_INPUTS, MAX_WATCHED_UNITS, UNIT_HEALTH_FLAGS
 from .workflows import SEMANTIC
 
 ACTION_HELP = {
@@ -33,56 +32,12 @@ def obj(properties=None, required=()):
 STRING = {"type": "string"}
 COORD = {"type": "integer", "minimum": 0}
 POSITION = obj({"x": COORD, "y": COORD, "z": COORD}, ("x", "y", "z"))
-INTERRUPT = obj(
-    {
-        "blood_loss": {"type": "boolean"},
-        "new_wounds": {"type": "boolean"},
-        "new_visible_units": {"type": "boolean"},
-        "new_visible_units_except": {"type": "array", "items": COORD, "maxItems": 100},
-        "visible_unit_ids": {"type": "array", "items": COORD, "maxItems": 100},
-        "report_types": {"type": "array", "items": STRING, "maxItems": 100},
-        "unit_health": {
-            "type": "array",
-            "maxItems": MAX_WATCHED_UNITS,
-            "items": obj(
-                {"unit_id": COORD, **{flag: {"type": "boolean"} for flag in UNIT_HEALTH_FLAGS}},
-                ("unit_id",),
-            ),
-        },
-    }
-)
-EXECUTION = obj(
-    {
-        "mode": {"enum": ["step", "complete"]},
-        "acknowledge": {"type": "boolean"},
-        "max_steps": {"type": "integer", "minimum": 1, "maximum": MAX_DISPATCH_INPUTS},
-        "interrupt_on": INTERRUPT,
-    }
-)
 ROUTE = {
     "extend_route": {"type": "boolean"},
     "allow_occupied": {"type": "boolean"},
     "max_liquid_depth": {"type": "integer", "minimum": 0, "maximum": 7},
     "blocked_tiles": {"type": "array", "items": POSITION, "maxItems": 500},
 }
-SETTINGS = obj(
-    {
-        "execution": EXECUTION,
-        "dispatch_timeout": {"type": "number", "minimum": 0.1, "maximum": 300},
-        "result_format": {"enum": ["compact", "full"]},
-        "event_detail": {"enum": ["task", "all"]},
-        "observation_view": {"enum": ["concise", "full"]},
-        "measurement": obj(
-            {
-                "enabled": {"type": "boolean"},
-                "path": {"type": ["string", "null"]},
-                "run": {"type": "string", "minLength": 1, "maxLength": 128},
-                "episode": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
-                "tokenizer": {"type": "string", "minLength": 1, "maxLength": 128},
-            }
-        ),
-    }
-)
 ACTIONS = [
     *[
         obj(
@@ -333,7 +288,7 @@ ACTIONS.append(
     )
 )
 
-# Action-specific semantics travel with the same schemas used by MCP.
+# Action-specific semantics travel with the shared CLI/Python action reference.
 for definition in ACTIONS:
     if note := ACTION_HELP.get(definition["properties"]["type"]["const"]):
         definition["description"] = note

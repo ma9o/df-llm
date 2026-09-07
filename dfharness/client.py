@@ -17,6 +17,7 @@ from .program import ASSETS as ASSETS
 from .program import MARKER, prepare_program
 from .program import lua_string as lua_string
 from .program import make_program as make_program
+from .readings import ReadCache
 from .rpc import (
     BridgeError,
     DFHackError,
@@ -186,6 +187,12 @@ class Client:
         return self.request({"op": "status"})
 
     @measured
+    def session(self, limit=20):
+        if type(limit) is not int or not 1 <= limit <= 128:
+            raise ValueError("session limit must be an integer in [1, 128]")
+        return self.request({"op": "session", "limit": limit})
+
+    @measured
     def capabilities(self):
         return capability_report(self.request({"op": "capabilities"}))
 
@@ -197,7 +204,13 @@ class Client:
 
     @measured
     def navigation(self, limit=20):
-        return self.request({"op": "navigation", "limit": limit})
+        return self.request({"op": "navigation", "limit": limit, "ui_mode": "native"})
+
+    @measured
+    def locate(self, kind, id):
+        if kind not in ("figure", "artifact") or type(id) is not int or not 0 <= id <= 2147483647:
+            raise ValueError("locate requires kind=figure/artifact and a nonnegative native ID")
+        return self.request({"op": "locate", "kind": kind, "id": id})
 
     @measured
     def character_status(self):
@@ -208,11 +221,32 @@ class Client:
         return character_brief(self.request({"op": "character_brief", "ui_mode": "native"}))
 
     @measured
-    def unit(self, unit_id, view="concise"):
+    def unit(self, unit_id, view="concise", since=None):
         if view not in ("concise", "full"):
             raise ValueError("view must be concise or full")
-        result = self.request({"op": "unit", "unit_id": unit_id})
-        return unit_brief(result) if view == "concise" else result
+        self._validate_since(since, view)
+        result = self.request(
+            {"op": "unit", "unit_id": unit_id, "unit_view": view, "ui_mode": "native"}
+        )
+        if view == "full":
+            return result
+        return self._reading(unit_brief(result), {"op": "unit", "unit_id": unit_id}, result, since)
+
+    @staticmethod
+    def _validate_since(since, view):
+        if since is not None and (
+            view != "concise" or not isinstance(since, str) or not 1 <= len(since) <= 100
+        ):
+            raise ValueError("since requires a read_ref string and view=concise")
+
+    def _reading(self, value, query, native, since):
+        scope = {
+            "port": self.port,
+            "world_epoch": native.get("status", {}).get("world_epoch"),
+            "query": query,
+        }
+        cache = ReadCache(settings_path(self.settings_path).parent / "readings.sqlite3")
+        return cache.project(value, scope, since)
 
     @measured
     def observe(
@@ -228,6 +262,7 @@ class Client:
         event_detail=None,
         reports_after=None,
         report_limit=None,
+        since=None,
     ):
         settings = read_settings(self.settings_path)
         view = view or settings["observation_view"]
@@ -236,6 +271,7 @@ class Client:
             raise ValueError("event_detail must be task or all")
         if view not in ("concise", "full", "choices"):
             raise ValueError("view must be concise, full or choices")
+        self._validate_since(since, view)
         request = {"op": "observe", "width": width, "height": height, "map": map}
         if view != "full":
             request["ui_mode"] = "native"
@@ -262,12 +298,14 @@ class Client:
         value = self.request(request)
         if view == "choices":
             return choice_observation(value)
-        return (
-            concise_observation(
-                value, event_detail, self.execution["interrupt_on"].get("report_types", [])
-            )
-            if view == "concise"
-            else value
+        if view == "full":
+            return value
+        force_types = self.execution["interrupt_on"].get("report_types", [])
+        return self._reading(
+            concise_observation(value, event_detail, force_types),
+            dict(request, event_detail=event_detail, force_types=force_types),
+            value,
+            since,
         )
 
     @measured

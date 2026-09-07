@@ -157,6 +157,13 @@ out.affiliation=read('affiliation',function()
         squad_position=u.military.squad_position}
     return result
 end)
+if out.affiliation then
+    local predicates=read('affiliation.classifications',function()return helpers.health.classifications(u)end)
+    out.affiliation.classifications=predicates
+    for name,reason in pairs(predicates and predicates.unavailable or {})do
+        unavailable('affiliation.classifications.'..name,reason)
+    end
+end
 
 -- Keep the same health counters and inventory schema as ordinary observations,
 -- and add the counters and explicit flags needed for a detailed status check.

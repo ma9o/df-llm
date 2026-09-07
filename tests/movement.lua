@@ -68,6 +68,15 @@ test('processing visibility reads IDs with the same filter as full observations'
     env.df.global.world.units={active={{id=0},{id=2,hidden=true},{id=3,visible=false},{id=4}}}
     env.dfhack.units={isVisible=function(u)return u.visible~=false end,
         isHidden=function(u)return u.hidden==true end}
+    env.dfhack.maps={getTileSize=function()return 96,144,160 end}
+    env.dfhack.units.getUnitsInBox=function(x1,y1,z1,x2,y2,z2,filter)
+        assert(x1==0 and y1==0 and z1==0 and x2==95 and y2==143 and z2==159)
+        local result={}
+        for _,u in ipairs(env.df.global.world.units.active)do
+            if filter(u)then result[#result+1]=u end
+        end
+        return result
+    end
     local partial=m.visible_units(true)
     local projections=0
     local full=m.visible_units(true,function(u)projections=projections+1;return {id=u.id,name='name'}end)

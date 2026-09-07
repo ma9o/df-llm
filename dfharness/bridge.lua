@@ -40,6 +40,7 @@ local runtime=runtime_reader({array=array,text=text,bindings=bindings,calculatio
 local screen_reader=modules.screen({array=array,glyph=glyph})
 local read_reports=modules.reports({array=array,text=text})
 local environment=modules.environment({array=array})
+local geography=modules.geography({text=text})
 local movement=modules.movement({array=array,text=text,bindings=bindings})
 local health=modules.health({array=array,text=text,same=function(a,b)return not next(wire.delta(a,b))end})
 local burden=modules.burden()
@@ -50,7 +51,7 @@ local saving=modules.saving({array=array,text=text,bindings=bindings,
     input=function(key)gui.simulateInput(dfhack.gui.getCurViewscreen(true),key)end})
 local attack=modules.attack({array=array,bindings=bindings,copy=wire.clone,report_events=report_events})
 local input_registered=false
-local lifetime=modules.session()
+local lifetime=modules.session(modules.checkpoints(wire))
 local session=lifetime.open()
 local pathing=modules.pathing({health=health,movement=movement,report_events=report_events,
     same=function(a,b)return not next(wire.delta(a,b))end,
@@ -232,61 +233,60 @@ local function navigation_info(s,with_leads)
             bounds={x1=x1,y1=y1,x2=x2,y2=y2},center={x=x,y=y},
             distance=p and math.max(math.abs(x-p.x),math.abs(y-p.y))}
     end
-    if p then for _,site in ipairs(df.global.world.world_data.sites) do
-        if p.x>=site.global_min_x*3 and p.x<=site.global_max_x*3+2
-            and p.y>=site.global_min_y*3 and p.y<=site.global_max_y*3+2 then
-            out.current_site=site_info(site)
-            if site.type==df.world_site_type.LairShrine then
-                local ok,entrance=pcall(function()
-                    local info=site.subtype_info
-                    if not info then return {available=true,present=false} end
-                    local e={x=info.entrance_x,y=info.entrance_y,z=info.entrance_z}
-                    if e.x<0 or e.y<0 or e.z==-1000000 then return {available=true,present=false} end
-                    local result={available=true,present=true,source='native_site_metadata',absolute=e,
-                        lair_type=df.lair_type[info.lair_type] or tostring(info.lair_type)}
-                    if s.map_origin and s.map_size then
-                        local local_pos={}
-                        local loaded=true
-                        for _,k in ipairs({'x','y','z'})do
-                            local_pos[k]=e[k]-s.map_origin[k]
-                            loaded=loaded and local_pos[k]>=0 and local_pos[k]<s.map_size[k]
-                        end
-                        result.loaded=loaded
-                        if loaded then
-                            result.position=local_pos
-                            result.visible=dfhack.maps.isTileVisible(local_pos.x,local_pos.y,local_pos.z)
-                        end
+    local current_site,site_query=geography.current_site(s)
+    out.current_site_query=site_query
+    if current_site then
+        out.current_site=site_info(current_site)
+        if current_site.type==df.world_site_type.LairShrine then
+            local ok,entrance=pcall(function()
+                local info=current_site.subtype_info
+                if not info then return {available=true,present=false} end
+                local e={x=info.entrance_x,y=info.entrance_y,z=info.entrance_z}
+                if e.x<0 or e.y<0 or e.z==-1000000 then return {available=true,present=false} end
+                local result={available=true,present=true,source='native_site_metadata',absolute=e,
+                    lair_type=df.lair_type[info.lair_type] or tostring(info.lair_type)}
+                if s.map_origin and s.map_size then
+                    local local_pos={}
+                    local loaded=true
+                    for _,k in ipairs({'x','y','z'})do
+                        local_pos[k]=e[k]-s.map_origin[k]
+                        loaded=loaded and local_pos[k]>=0 and local_pos[k]<s.map_size[k]
                     end
-                    return result
-                end)
-                out.current_site.entrance=ok and entrance or {available=false,reason=tostring(entrance):sub(1,240)}
-            end
-            local r=site.realization
-            local b=out.current_site.bounds
-            local w,h=b.x2-b.x1+1,b.y2-b.y1+1
-            if r and w<=51 and h<=51 and (not p.z or p.z==0) then
-                local grid={source='native site travel grid; direction masks and forbidden_adv_travel flags',
-                    origin={x=b.x1,y=b.y1},width=w,height=h,rows=array(),masks=array(),blocked=array(),
-                    mask_encoding='two hex digits per tile: n=1,s=2,e=4,w=8,nw=16,sw=32,ne=64,se=128'}
-                local bits={{'north',1},{'south',2},{'east',4},{'west',8},{'northwest',16},
-                    {'southwest',32},{'northeast',64},{'southeast',128}}
-                for y=0,h-1 do
-                    local row,masks,blocked={},{},{}
-                    for x=0,w-1 do
-                        local mask=0
-                        for _,bit in ipairs(bits) do if r.zoom_movemask[x][y][bit[1]] then mask=mask+bit[2] end end
-                        row[#row+1]=glyph(r.zoom_tiles[x][y]);masks[#masks+1]=('%02x'):format(mask)
-                        blocked[#blocked+1]=r.flags_map[x][y].forbidden_adv_travel and '1' or '0'
+                    result.loaded=loaded
+                    if loaded then
+                        result.position=local_pos
+                        result.visible=dfhack.maps.isTileVisible(local_pos.x,local_pos.y,local_pos.z)
                     end
-                    grid.rows[#grid.rows+1]=table.concat(row);grid.masks[#grid.masks+1]=table.concat(masks)
-                    grid.blocked[#grid.blocked+1]=table.concat(blocked)
                 end
-                out.site_grid=grid
-            else out.site_grid_unavailable='No supported surface travel grid is currently loaded' end
-            break
+                return result
+            end)
+            out.current_site.entrance=ok and entrance or {available=false,reason=tostring(entrance):sub(1,240)}
         end
-    end end
+        local r=current_site.realization
+        local b=out.current_site.bounds
+        local w,h=b.x2-b.x1+1,b.y2-b.y1+1
+        if r and w<=51 and h<=51 and (not p or not p.z or p.z==0) then
+            local grid={source='native site travel grid; direction masks and forbidden_adv_travel flags',
+                origin={x=b.x1,y=b.y1},width=w,height=h,rows=array(),masks=array(),blocked=array(),
+                mask_encoding='two hex digits per tile: n=1,s=2,e=4,w=8,nw=16,sw=32,ne=64,se=128'}
+            local bits={{'north',1},{'south',2},{'east',4},{'west',8},{'northwest',16},
+                {'southwest',32},{'northeast',64},{'southeast',128}}
+            for y=0,h-1 do
+                local row,masks,blocked={},{},{}
+                for x=0,w-1 do
+                    local mask=0
+                    for _,bit in ipairs(bits) do if r.zoom_movemask[x][y][bit[1]] then mask=mask+bit[2] end end
+                    row[#row+1]=glyph(r.zoom_tiles[x][y]);masks[#masks+1]=('%02x'):format(mask)
+                    blocked[#blocked+1]=r.flags_map[x][y].forbidden_adv_travel and '1' or '0'
+                end
+                grid.rows[#grid.rows+1]=table.concat(row);grid.masks[#grid.masks+1]=table.concat(masks)
+                grid.blocked[#grid.blocked+1]=table.concat(blocked)
+            end
+            out.site_grid=grid
+        else out.site_grid_unavailable='No supported surface travel grid is currently loaded' end
+    end
     if with_leads then
+        out.biome=geography.biome(s.position)
         local limit=integer(req.limit or 20,1,100,'limit')
         local n=s.player_nemesis_id and df.nemesis_record.find(s.player_nemesis_id)
         local info=n and n.figure and n.figure.info and n.figure.info.known_info
@@ -732,6 +732,15 @@ local function observe(ui,s,pending_only)
     if pending_only then return progress_reader(s,req,replaced) end
     local out={status=s,ui=ui,state_id=state_id(s,ui),effect_id=state_id(s,ui,true),
         input_guard={schema=2,native_complete=guard_cache[s].complete}}
+    if req.character_progress and s.can_move and guard_cache[s].complete then
+        out.checkpoint_guard=optional(function()
+            local u=dfhack.world.getAdventurer()
+            local path=guard_cache[s].character and guard_cache[s].character.path
+            if u and #u.actions==0 and path and path.available and path.goal=='None' then
+                return input_guard(s,ui,guard_cache[s],true,true)
+            end
+        end)
+    end
     if req.watch_units then out.watched_units=health.read(req.watch_units,s.mode=='adventure' and s.map_loaded) end
     if req.strike_state then out.strike_state=attack.state() end
     if req.native_path_state then out.native_path=pathing.state()end
@@ -1108,12 +1117,17 @@ local function dispatch()
             out.reason='Unit is not currently loaded and visible';return out
         end
         check(type(unit_reader)=='function','Unit reader was not supplied by this client')
-        out.unit=unit_reader(u,character_base(u,true),{array=array,text=text,health=health})
+        local brief=req.unit_view=='concise'
+        out.unit=unit_reader(u,character_base(u,not brief,brief),{array=array,text=text,health=health,brief=brief})
         out.available=true;return out
     elseif req.op=='navigation' then
         local ui=ui_rows();local s=status(ui)
         check(s.mode=='adventure','Navigation requires an active adventure')
         return {status=s,state_id=state_id(s,ui),navigation=navigation_info(s,true)}
+    elseif req.op=='locate' then
+        return geography.locate(req.kind,req.id)
+    elseif req.op=='session' then
+        return lifetime.describe(session,integer(req.limit or 20,1,128,'limit'))
     elseif req.op=='character_status' or req.op=='character_brief' then
         local brief=req.op=='character_brief'
         local ui=ui_rows();local s=status(ui)
@@ -1134,9 +1148,10 @@ local function dispatch()
     elseif req.op=='act' then return act()
     elseif req.op=='begin_dispatch' then
         check(type(req.request_id)=='string' and #req.request_id>0 and #req.request_id<=100,'Invalid request_id')
-        local previous=session.dispatches[req.request_id]
+        local previous=lifetime.lookup(session,req.request_id)
         local signature=wire.intent(req)
         if previous then
+            check(previous.request,'Saved dispatch is unavailable: '..tostring(previous.restore_reason))
             check(wire.intent(previous.request)==signature,'request_id reused with different arguments')
             if req.result_format=='compact' and previous.compact then
                 return {duplicate=true,compact=previous.compact}
@@ -1150,13 +1165,14 @@ local function dispatch()
         local resume_id=req.action and req.action.type=='resume' and req.action.dispatch_id
         local last_action_id
         if resume_id then
-            local prior=session.dispatches[resume_id]
+            local prior=lifetime.lookup(session,resume_id)
             check(prior,'Unknown dispatch (game restarted or receipt expired)')
             check(not prior.resumed_by,'Dispatch was already resumed; use its latest continuation')
-            local resume_reason=lifetime.resume_reason(prior,session,view.status)
+            local resume_reason=lifetime.resume_reason(prior,session,view.status,view.checkpoint_guard)
             check(not resume_reason,resume_reason)
             check(not session.active_dispatch or session.active_dispatch==resume_id,'Another dispatch is active')
-            workflow=copy(prior.workflow);last_action_id=prior.last_action_id
+            workflow=copy(prior.workflow)
+            last_action_id=not prior.restored_epoch and prior.last_action_id or nil
         else
             local active=session.active_dispatch and session.dispatches[session.active_dispatch]
             check(not active or active.interrupted,'Another dispatch is active; interrupt or resume it first')
@@ -1164,6 +1180,9 @@ local function dispatch()
         local record={request=signature,workflow=workflow,save=view.status.save,world_epoch=session.world_epoch,
             adventurer_id=view.status.adventurer_id,last_action_id=last_action_id,
             interrupted=session.interrupt_requests[req.request_id] or false}
+        local persisted,why=lifetime.persist_begin(session,req.request_id,record,resume_id)
+        check(persisted,
+            'Cannot invalidate the saved predecessor before resuming: '..tostring(why))
         session.interrupt_requests[req.request_id]=nil
         session.dispatches[req.request_id]=record
         if resume_id then session.dispatches[resume_id].resumed_by=req.request_id end
@@ -1199,18 +1218,24 @@ local function dispatch()
         record.workflow_revision=(record.workflow_revision or 0)+1
         record.view=final_view;record.compact=req.compact and copy(req.compact)
         record.snapshot=nil
+        local persisted,why=lifetime.persist_finish(session,req.action_id,record,final_view,session.receipts[record.last_action_id])
+        if persisted==false then record.checkpoint_unavailable=why end
+        if record.checkpoint_unavailable then
+            summary.checkpoint_unavailable=record.checkpoint_unavailable
+            if record.compact then record.compact.checkpoint_unavailable=record.checkpoint_unavailable end
+        end
         if session.active_dispatch==req.action_id then session.active_dispatch=nil end
-        return {recorded=true,workflow_revision=record.workflow_revision}
+        return {recorded=true,workflow_revision=record.workflow_revision,checkpoint_unavailable=record.checkpoint_unavailable}
     elseif req.op=='dispatch_details' then
         check(type(req.dispatch_id)=='string' and #req.dispatch_id>0,'dispatch_id must be nonempty')
         local section=req.section or 'events'
         check(section=='events' or section=='prompts' or section=='steps' or section=='summary'
             or section=='full' or section=='compact','Unknown dispatch detail section')
-        local record=session.dispatches[req.dispatch_id]
+        local record=lifetime.lookup(session,req.dispatch_id)
         if not record then return {available=false,dispatch_id=req.dispatch_id,
             reason='Unknown or expired dispatch; the native session retains the last 128 dispatches'} end
         if not record.dispatch then return {available=false,dispatch_id=req.dispatch_id,
-            reason='Dispatch has no final receipt yet; execution is not affected by this query'} end
+            reason=record.restore_reason or 'Dispatch has no final receipt yet; execution is not affected by this query'} end
         local value=section=='summary' and record.dispatch or section=='full' and record.view
             or section=='compact' and record.compact or record.dispatch[section]
         if section=='full' and not value then value={dispatch=record.dispatch,observation_unavailable=true} end
@@ -1279,6 +1304,7 @@ local function dispatch()
         local out=tile_info(x,y,z)
         out.position={x=x,y=y,z=z};out.items=array();out.units=array()
         if out.visible then
+            out.biome=geography.biome(out.position)
             if out.building then
                 local ok,b=pcall(dfhack.buildings.findAtTile,x,y,z)
                 out.building_info=ok and b and environment.building(b) or

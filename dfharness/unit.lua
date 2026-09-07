@@ -32,6 +32,10 @@ out.identity=read('identity',function()
     return {hist_figure_id=u.hist_figure_id,sex=u.sex,age_years=dfhack.units.getAge(u),
         profession=text(dfhack.units.getProfessionName(u)),civilization_id=u.civ_id}
 end)
+out.classifications=read('classifications',function()return h.health.classifications(u)end)
+for name,reason in pairs(out.classifications and out.classifications.unavailable or {})do
+    out.unavailable[#out.unavailable+1]={path='classifications.'..name,reason=reason}
+end
 out.health=fields('health',u.body,{'blood_count','blood_max'})
 for _,name in ipairs({'pain','nausea','unconscious','stunned','suffocation','winded'}) do
     out.health[name]=read('health.'..name,function()return u.counters[name]end)
@@ -109,7 +113,11 @@ end
 inventory_bounds(out.inventory or {})
 out.coverage={complete=#out.unavailable==0 and #out.truncated==0 and not out.inventory_truncated,
     unavailable_count=#out.unavailable,truncated_count=#out.truncated,sections=array()}
-for _,name in ipairs({'identity','health','attributes','skills','inventory','body','combat','condition','affiliations'}) do
+if h.brief then
+    out.coverage.scope='brief'
+    out.coverage.not_queried={'inventory.item_definitions','inventory.container_contents'}
+end
+for _,name in ipairs({'identity','classifications','health','attributes','skills','inventory','body','combat','condition','affiliations'}) do
     local partial=false
     for _,v in ipairs(out.unavailable) do if v.path:match('^'..name..'[%.%[]') or v.path==name then partial=true end end
     for _,v in ipairs(out.truncated) do if v.path:match('^'..name..'[%.%[]') or v.path==name then partial=true end end

@@ -66,6 +66,21 @@ test('input serial is excluded only from effect identity',function()
     assert(guard(s,ui,n)~=guard(changed,ui,n))
     assert(guard(s,ui,n,true)==guard(changed,ui,n,true))
 end)
+test('portable checkpoint excludes reload/render counters but retains simulation facts',function()
+    local before=copy(s);before.world_epoch='a';before.local_map_epoch='a.1'
+    before.year=100;before.year_tick=42;before.save='first';before.viewport={zoom=64}
+    local after=copy(before)
+    after.world_frame=0;after.action_serial=0;after.world_epoch='b';after.local_map_epoch='b.2'
+    after.save='renamed';after.viewport.zoom=128
+    local resized=copy(ui);resized.width=200
+    assert(guard(before,ui,n)~=guard(after,resized,n))
+    assert(guard(before,ui,n,true,true)==guard(after,resized,n,true,true))
+    after.year_tick=43
+    assert(guard(before,ui,n,true,true)~=guard(after,resized,n,true,true))
+    after.year_tick=42
+    local injured=copy(n);injured.character.blood=0
+    assert(guard(before,ui,n,true,true)~=guard(after,resized,injured,true,true))
+end)
 test('native help reflow preserves semantic identity without mutating the observation',function()
     local help=copy(s);help.modal={kind='help',title='Travel',button='Okay',
         text={'This is travel mode.  Here you can travel great distances.'}}

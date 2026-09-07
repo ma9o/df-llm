@@ -168,7 +168,7 @@ dispatch completion, or interruption policy.
 
 ## Verification and limits
 
-Live read-only CLI, Python, and MCP queries must agree. The live check compares
+Live read-only CLI and Python queries must agree. The live check compares
 calculated display speed with the ASCII HUD when visible, and checks unchanged
 time, action serial, position, health, inventory, focus, panels, and modal state.
 Synthetic Lua fixtures exercise every need boundary and arithmetic/state

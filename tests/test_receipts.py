@@ -6,7 +6,6 @@ from copy import deepcopy
 from unittest.mock import patch
 
 from dfharness.client import Client, render_observation
-from dfharness.mcp import Server
 from dfharness.state import compact_result, field_changes
 from tests.support import Bridge
 from tests.test_interactions import conversation, option, speech
@@ -497,25 +496,12 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(compact_result(after, before)["said"][0]["reply"], answer["text"])
         self.assertNotIn("said", compact_result(after, before, seen_reply_ids=[10]))
 
-    def test_production_mcp_exposes_readonly_receipt_retrieval(self):
-        client = Client(port=1)
-        server = Server(client)
-        server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-        definition = next(t for t in server.tools if t["name"] == "df_dispatch_details")
-        self.assertTrue(definition["annotations"]["readOnlyHint"])
+    def test_python_exposes_readonly_receipt_retrieval(self):
+        client = Client(port=1, execution={"mode": "complete", "acknowledge": True})
         with patch.object(client, "request", return_value={"available": False}) as request:
-            result = server.handle(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "df_dispatch_details",
-                        "arguments": {"dispatch_id": "expired", "section": "full"},
-                    },
-                }
+            self.assertEqual(
+                client.dispatch_details("expired", section="full"), {"available": False}
             )
-        self.assertFalse(result["result"]["isError"])
         request.assert_called_once_with(
             {"op": "dispatch_details", "dispatch_id": "expired", "section": "full"}
         )

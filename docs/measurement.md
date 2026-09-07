@@ -3,17 +3,17 @@
 The measurement layer records the cost of controller interactions without
 changing their payloads, execution policies or game inputs. It is off by default.
 Failures to count tokens or append a log do not retry an action or turn a
-successful query into an error. Diagnostics go to stderr, never MCP stdout.
+successful query into an error. Diagnostics go to stderr, separately from CLI response output.
 
 ## Recording and episode identity
 
 ```sh
 ./dfctl metrics --prepare-tokenizer o200k_base
 ./dfctl settings --set '{"measurement":{"enabled":true,"path":"metrics.jsonl","run":"baseline","episode":"drop-backpack-and-strike-1"}}'
-./dfctl mcp
+./dfctl look
 ```
 
-Saved measurement settings refresh across CLI processes and existing Python/MCP
+Saved measurement settings refresh across CLI processes and existing Python
 clients. `path` defaults to `metrics.jsonl` beside the controller settings file;
 relative saved paths resolve there. `run` names a controller session/comparison
 cohort. `episode` identifies one instruction within that run. Use a unique label
@@ -34,10 +34,10 @@ Explicit process/constructor values override environment, then saved settings.
 An explicit path enables recording without changing saved settings. Disable
 saved recording with `{"measurement":{"enabled":false}}`.
 
-MCP controllers can set the episode through the existing `df_settings` tool:
+Python controllers can set the episode through `Client.settings`:
 
-```json
-{"update":{"measurement":{"enabled":true,"run":"baseline","episode":"room-1"}}}
+```python
+game.settings(update={"measurement": {"enabled": True, "run": "baseline", "episode": "room-1"}})
 ```
 
 That settings call itself starts under the previous configuration; subsequent
@@ -56,7 +56,7 @@ After changing tiktoken versions, explicitly prepare the encoding again.
 Missing/corrupt data leaves token counts null, with a counted failure; byte and
 duration measurements still work. No approximate character-to-token ratio is
 substituted. CLI processes still pay local tokenizer loading cost, recorded as
-`measurement_ms`. A persistent MCP/Python client caches the encoding in memory.
+`measurement_ms`. A persistent Python client caches the encoding in memory.
 Encoding and package versions are retained for comparisons.
 
 ## What is measured
@@ -70,16 +70,16 @@ intents, dispatch/resume IDs, outcomes and error codes support episode analysis.
 
 | Field | Boundary |
 |---|---|
-| Input bytes/tokens | Canonical Python arguments, MCP params, or CLI argv plus stdin |
-| Output bytes/tokens | Canonical Python return JSON, actual CLI output, or MCP tool text |
-| `duration_ms` | Monotonic time to response production, including CLI/MCP output flush and MCP worker queueing |
+| Input bytes/tokens | Canonical Python arguments or CLI argv plus stdin |
+| Output bytes/tokens | Canonical Python return JSON or actual CLI output |
+| `duration_ms` | Monotonic time to response production, including CLI output flush |
 | `measurement_ms` | Final serialization/token counting, including a cold local encoding load; excludes the JSONL append |
 | `at`, `finished_at` | Start and end of the measured interval, including token counting |
 | `rpc_calls`, `rpc_ms` | Native calls beneath the interaction, including readiness polls and failures |
 | RPC bytes | Lua request source and command output, excluding protobuf framing |
 
 No internal RPC token counts are added to controller tokens. Errors with a CLI
-or MCP response measure that response; a Python exception without a returned
+response measure that response; a Python exception without a returned
 payload has unknown output tokens. Trace records can remain without a finished
 interaction if a process is terminated. Reports count these unfinished traces.
 
@@ -130,6 +130,9 @@ Explicit resumes and same-dispatch redeliveries are counted separately. A
 same-target retry is a diagnostic proxy, not proof of a prerequisite bug or an
 unnecessary action. No new actions or reads are issued to establish a match.
 
+Historical records from the removed MCP adapter remain readable, including
+its `df_` operation names and original surface/output format.
+
 The bounce-rate denominator contains assessable non-completed calls with a
 later dispatch. Unknown target metadata, ambiguous legacy follow-ups,
 overlapping calls and open tails are counted separately. Old records contain
@@ -146,6 +149,6 @@ not prove an improvement. Sample counts, outcome mix and coverage remain visible
 ## Verification
 
 `uv run python -m tests.run tests.test_metrics tests.test_metrics_report -v`
-covers boundaries on all three surfaces, correlated native calls and errors,
+covers CLI and Python boundaries, correlated native calls and errors,
 passive failure isolation, concurrent appends, offline tokenization, timing
 overlaps, legacy records, follow-up reads, bounces/resumes and comparisons.

@@ -105,6 +105,8 @@ def parser():
         "--text", action="store_true", help="Render the character report as readable text"
     )
     subs.add_parser("game-status", help="Read only the mode, screen, turn readiness, and version")
+    session = subs.add_parser("session", help="Read saved dispatch IDs and checkpoint eligibility")
+    session.add_argument("--limit", type=int, default=20)
     brief = subs.add_parser(
         "brief", help="Read selected character essentials; status remains comprehensive"
     )
@@ -114,9 +116,10 @@ def parser():
     )
     unit.add_argument("unit_id", type=int)
     unit.add_argument("--view", choices=["concise", "full"], default="concise")
+    unit.add_argument("--since", help="Return exact changes against a previous concise read_ref")
     unit.add_argument("--text", action="store_true")
     settings = subs.add_parser(
-        "settings", help="Read or persist controller settings shared by CLI, Python and MCP"
+        "settings", help="Read or persist controller settings shared by CLI and Python"
     )
     settings.add_argument("--set", dest="settings_update", type=json.loads)
     settings.add_argument(
@@ -185,6 +188,7 @@ def parser():
         help="Read reports newer than this native ID; -1 starts history",
     )
     obs.add_argument("--report-limit", type=int, help="Native report page size, 1..4096")
+    obs.add_argument("--since", help="Return exact changes against a previous concise read_ref")
     items = subs.add_parser(
         "items", help="Read visible nearby items and container contents in one call"
     )
@@ -200,6 +204,11 @@ def parser():
         "navigation", help="Read travel coordinates, native site grid, and character-known leads"
     )
     navigation.add_argument("--limit", type=int, default=20)
+    locate = subs.add_parser(
+        "locate", help="Locate a historical figure or artifact in DFHack world records"
+    )
+    locate.add_argument("kind", choices=["figure", "artifact"])
+    locate.add_argument("id", type=int)
     keys.add_argument("filter", nargs="?", default="")
     inspect = subs.add_parser("inspect", help="Read a world tile and the items/creatures on it")
     for coord in ("x", "y", "z"):
@@ -212,12 +221,6 @@ def parser():
     run = subs.add_parser("run", help="Run an explicit DFHack command (advanced escape hatch)")
     run.add_argument("args", nargs=argparse.REMAINDER)
     subs.add_parser("native-ascii", help="Run the original experimental classic-render capture")
-    mcp = subs.add_parser("mcp", help="Serve structured tools to any MCP client over stdio")
-    mcp.add_argument(
-        "--dev-tools",
-        action="store_true",
-        help="Expose raw UI inputs, key discovery and full traces",
-    )
     actions = {}
     for name, need in (("drink", "thirst"), ("eat", "hunger")):
         actions[name] = subs.add_parser(
@@ -529,11 +532,6 @@ def main(argv=None):
             metrics_episode=args.episode,
             tokenizer=args.tokenizer,
         )
-        if args.command == "mcp":
-            from .mcp import serve
-
-            serve(client, development=args.dev_tools)
-            return 0
         with client.metrics.interaction(
             "cli", args.command, {"argv": list(argv)}, started_ns=started_ns
         ) as span:
@@ -623,7 +621,7 @@ def execute(args, client=None):
             elif args.command == "brief":
                 result = client.brief()
             elif args.command == "unit":
-                result = client.unit(args.unit_id, args.view)
+                result = client.unit(args.unit_id, args.view, since=args.since)
             elif args.command == "settings":
                 update = args.settings_update
                 policy = {
@@ -641,6 +639,10 @@ def execute(args, client=None):
                 result = client.settings(update, reset=args.reset)
             elif args.command == "navigation":
                 result = client.navigation(args.limit)
+            elif args.command == "session":
+                result = client.session(args.limit)
+            elif args.command == "locate":
+                result = client.locate(args.kind, args.id)
             elif args.command == "character-status":
                 result = client.character_status()
             elif args.command in ("observe", "look"):
@@ -657,6 +659,7 @@ def execute(args, client=None):
                     event_detail=args.event_detail,
                     reports_after=args.reports_after,
                     report_limit=args.report_limit,
+                    since=args.since,
                 )
             elif args.command == "items":
                 result = client.items(args.radius)

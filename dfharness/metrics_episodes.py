@@ -17,6 +17,8 @@ READS = {
     "item",
     "items",
     "navigation",
+    "locate",
+    "session",
     "inspect",
     "dispatch_details",
     "wait_ready",

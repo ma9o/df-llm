@@ -85,6 +85,26 @@ def scene(name, carried=(), ground=(), *, choices=None, x=1, blood=1000, reports
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_persistence_failure_is_reported_without_replaying_a_completed_game_input(self):
+        for output in ("full", "compact"):
+            bridge = Bridge(scene("before"), [scene("after")])
+
+            def send(request, bridge=bridge):
+                result = bridge(request)
+                if request["op"] == "finish_dispatch":
+                    result["checkpoint_unavailable"] = "World storage unavailable"
+                return result
+
+            client = Client(port=1)
+            with patch.object(client, "request", side_effect=send):
+                response = client.act(
+                    {"type": "wait"}, execution={"mode": "complete"}, result_format=output
+                )
+            result = response["dispatch"] if output == "full" else response
+            self.assertEqual(result["outcome"], "completed")
+            self.assertEqual(result["checkpoint_unavailable"], "World storage unavailable")
+            self.assertEqual(len(bridge.inputs), 1)
+
     def test_large_controller_budget_keeps_completion_limits_and_injury_checks(self):
         def walking_scene(x, *, blood=1000):
             value = scene(str(x), x=x, blood=blood)

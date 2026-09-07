@@ -84,7 +84,7 @@ class Span:
         self.recorder = recorder
         self.surface, self.operation, self.request = surface, operation, request
         self.started_ns = time.perf_counter_ns() if started_ns is None else started_ns
-        # CLI parsing and MCP queueing can precede span construction.
+        # CLI argument parsing and client construction can precede span construction.
         self.at = datetime.now(UTC) - timedelta(
             microseconds=(time.perf_counter_ns() - self.started_ns) / 1000
         )
@@ -300,7 +300,7 @@ class Recorder:
 
 
 def measured(method):
-    """Only the outer Python/CLI/MCP boundary becomes a controller interaction."""
+    """Only the outer Python/CLI boundary becomes a controller interaction."""
     signature = inspect.signature(method)
 
     @wraps(method)

@@ -134,9 +134,11 @@ def capability_report(native):
         "status": "Comprehensive character query; its per-section coverage is authoritative",
         "burden": "DFHack Lua helper reads unit/item state independently of panels; capacity, skill-adjusted load, load penalty and burden; no screen scan or cache refresh",
         "observe": "Local ASCII terrain, visible units/items, health, needs, current native choices",
-        "navigation": "Travel coordinates, site grid and character-known rumors",
-        "unit": "Visible character inspection",
+        "navigation": "Native current site/biome, travel coordinates, site grid and character-known rumors",
+        "locate": "Explicit gui/adv-finder world-record lookup by historical figure or artifact ID",
+        "unit": "Visible character inspection, native classifications and targetable anatomy; concise skips deep item reads",
         "dispatch_details": "Read saved outcomes, events, prompts and execution traces",
+        "session": "Save-scoped dispatch index; explicit fresh-stage resume with matching native state, no pending-input replay",
     }
     result["remaining_semantic_work"] = [
         "Wrestling, defense, charge, multiattack and ranged combat",

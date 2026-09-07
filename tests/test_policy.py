@@ -5,9 +5,7 @@ import unittest
 from copy import deepcopy
 from unittest.mock import patch
 
-from dfharness.actions import INTERRUPT
 from dfharness.client import Client
-from dfharness.mcp import validate
 from dfharness.policy import execution_policy, interruption, watch_options
 from dfharness.rpc import BridgeError
 from tests.support import Bridge
@@ -176,7 +174,6 @@ class HealthWatchTests(unittest.TestCase):
         policy = execution_policy(
             {"interrupt_on": {"unit_health": [{"unit_id": 0, "new_wounds": True}]}}
         )
-        validate(policy["interrupt_on"], INTERRUPT)
         self.assertEqual(watch_options(policy), {"watch_units": [0]})
         self.assertEqual(watch_options(execution_policy()), {})
 

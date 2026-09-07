@@ -22,9 +22,19 @@ class SettingsViewTests(unittest.TestCase):
         ]
         source = {"available": True, "unit": {"body": {"parts": parts}}}
         body = unit_brief(source)["unit"]["body"]
-        self.assertEqual(body["parts"], [{"id": 0, "name": "head"}, {"id": 1, "name": "leg"}])
-        self.assertEqual(body["parts_with_status_flags"], [parts[1]])
+        self.assertEqual(body["parts"], {"0": "head", "1": "leg"})
+        self.assertEqual(body["status_flags"], {"broken": [1]})
         self.assertEqual(source["unit"]["body"]["parts"], parts)
+        with_condition = {
+            "available": True,
+            "unit": {
+                "body": {"parts": parts},
+                "condition": {"parts_with_status": [], "parts_omitted": 1},
+            },
+        }
+        self.assertEqual(
+            unit_brief(with_condition)["unit"]["body"]["status_flags"], {"broken": [1]}
+        )
 
     def test_default_observation_is_concise_without_changing_execution_policy(self):
         c = Client(port=1)
@@ -37,6 +47,70 @@ class SettingsViewTests(unittest.TestCase):
             self.assertEqual(c.observe(view="full"), initial)
         self.assertEqual(c.execution["mode"], "step")
         self.assertFalse(c.execution["acknowledge"])
+
+    def test_brief_keeps_injuries_beyond_the_combat_summary_bound_without_duplicate_names(self):
+        parts = [
+            {"id": i, "name": f"part {i}", "active_status_flags": ["missing"]} for i in range(17)
+        ]
+        source = {
+            "available": True,
+            "unit": {
+                "body": {"parts": parts},
+                "condition": {
+                    "parts_with_status": [
+                        {"id": i, "name": f"part {i}", "flags": ["missing"]} for i in range(16)
+                    ],
+                    "parts_omitted": 1,
+                },
+                "truncated": [{"path": "condition.parts", "omitted": 1}],
+                "coverage": {"complete": False, "truncated_count": 1},
+            },
+        }
+        result = unit_brief(source)["unit"]
+        self.assertEqual(result["body"]["parts"]["16"], "part 16")
+        self.assertEqual(result["body"]["status_flags"]["missing"], list(range(17)))
+        self.assertNotIn("parts_with_status", result["condition"])
+        self.assertEqual(result["truncated"], source["unit"]["truncated"])
+        self.assertFalse(result["query_coverage"]["complete"])
+        self.assertEqual(len(source["unit"]["condition"]["parts_with_status"]), 16)
+
+    def test_unit_brief_preserves_read_failures_and_zero_without_duplicate_health(self):
+        source = {
+            "available": True,
+            "unit": {
+                "attributes": {
+                    "physical": [
+                        {"name": "STRENGTH", "value": 0, "effective": 0},
+                        {"name": "AGILITY", "value": 100, "effective": 50},
+                    ]
+                },
+                "health": {"blood_count": 0, "pain": 0},
+                "condition": {"alive": False, "blood_count": 0, "parts_with_status": []},
+                "classifications": {
+                    "available": False,
+                    "values": {"isDanger": False},
+                    "unavailable": {"isTame": "missing"},
+                },
+                "unavailable": [{"path": "classifications.isTame", "reason": "missing"}],
+                "coverage": {"complete": False, "not_queried": ["inventory.container_contents"]},
+            },
+        }
+        client = Client(port=1)
+        with patch.object(client, "request", return_value=source) as request:
+            brief = client.unit(12)["unit"]
+            self.assertEqual(request.call_args.args[0]["unit_view"], "concise")
+            self.assertEqual(client.unit(12, view="full"), source)
+            self.assertEqual(request.call_args.args[0]["unit_view"], "full")
+        self.assertEqual(
+            brief["attributes"]["physical"],
+            {"STRENGTH": 0, "AGILITY": {"value": 100, "effective": 50}},
+        )
+        self.assertNotIn("health", brief)
+        self.assertEqual(brief["condition"]["blood_count"], 0)
+        self.assertIs(brief["condition"]["alive"], False)
+        self.assertIs(brief["classifications"]["values"]["isDanger"], False)
+        self.assertFalse(brief["query_coverage"]["complete"])
+        self.assertEqual(brief["unavailable"], source["unit"]["unavailable"])
 
     def test_choices_view_uses_a_narrow_native_read_and_keeps_undecoded_interfaces_visible(self):
         initial = scene("Name an item")
@@ -61,7 +135,7 @@ class SettingsViewTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def test_settings_persist_across_clients_and_refresh_existing_mcp_client(self):
+    def test_settings_persist_across_clients_and_refresh_existing_python_client(self):
         old = Client(port=1)
         self.assertEqual(old.execution["mode"], "step")
         Client(port=1).settings(

@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 from dfharness.cli import main
 from dfharness.composition import expand
-from dfharness.mcp import TOOLS, validate
 from dfharness.workflows import validate_action
 from tests.support import Bridge
 from tests.support import FullClient as Client
@@ -186,8 +185,6 @@ class TactTests(unittest.TestCase):
         questions = ["Greet", {"topic": "FishForPlots", "tact": "Persuade"}]
         action = {"type": "converse", "unit_ids": [2, 3], "topics": questions}
         validate_action(action)
-        schema = next(t["inputSchema"] for t in TOOLS if t["name"] == "df_act")
-        validate({"action": action}, schema)
         stages = expand(action)
         self.assertEqual(stages[2], dict(ACTION, completion="reply"))
         self.assertEqual(stages[5], dict(ACTION, unit_id=3, completion="reply"))

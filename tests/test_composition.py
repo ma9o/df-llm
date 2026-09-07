@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 from dfharness.client import render_observation
 from dfharness.composition import observation_args
-from dfharness.mcp import TOOLS, validate
 from dfharness.rpc import BridgeError
 from dfharness.workflows import validate_action
 from tests.support import Bridge
@@ -231,10 +230,8 @@ class CompositionTests(unittest.TestCase):
             with self.subTest(action=action), self.assertRaises(ValueError):
                 validate_action(action)
 
-    def test_mcp_schema_accepts_composition_and_reply_completion(self):
-        schema = next(t["inputSchema"] for t in TOOLS if t["name"] == "df_act")
+    def test_validation_accepts_composition_and_reply_completion(self):
         action = sequence(STAND, {"type": "converse", "unit_ids": [2, 3], "topics": ["GREET"]})
-        validate({"action": action}, schema)
         validate_action(action)
 
 

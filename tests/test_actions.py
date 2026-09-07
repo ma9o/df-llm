@@ -6,32 +6,14 @@ from unittest.mock import patch
 from dfharness.actions import ACTIONS, action_reference
 from dfharness.cli import main
 from dfharness.client import Client
-from dfharness.mcp import Server, validate
+from dfharness.workflows import validate_action
 
 
 class ActionReferenceTests(unittest.TestCase):
-    def test_cli_python_and_mcp_share_exact_schemas_without_game_reads(self):
+    def test_cli_and_python_share_exact_schemas_without_game_reads(self):
         client = Client(port=1)
-        server = Server(client)
-        server.handle(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {"protocolVersion": "2025-11-25"},
-            }
-        )
         with patch.object(client, "request", side_effect=AssertionError("Reference must be local")):
             expected = client.actions("strike")
-            response = server.handle(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/call",
-                    "params": {"name": "df_actions", "arguments": {"name": "strike"}},
-                }
-            )
-        self.assertEqual(json.loads(response["result"]["content"][0]["text"]), expected)
         output = io.StringIO()
         with (
             patch("sys.stdout", output),
@@ -42,7 +24,7 @@ class ActionReferenceTests(unittest.TestCase):
         ):
             self.assertEqual(main(["--port", "1", "actions", "strike"]), 0)
         self.assertEqual(json.loads(output.getvalue()), expected)
-        validate(
+        validate_action(
             {
                 "type": "strike",
                 "unit_id": 1,
@@ -51,7 +33,6 @@ class ActionReferenceTests(unittest.TestCase):
                 "attack_index": 0,
                 "style": "normal",
             },
-            expected["schema"],
         )
 
     def test_reference_is_bounded_and_preserves_schema_ownership(self):

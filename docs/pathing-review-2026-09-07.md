@@ -37,7 +37,7 @@ route at submission time.
 The native command has no excluded-tile, liquid-depth or occupancy restriction
 fields. Explicit route restrictions and frontier exploration continue to use
 the existing constrained adapter. Thus `routing.py` is **not retired**. Ordinary
-CLI, Python and MCP requests omit those restrictions and use native pathing;
+CLI and Python requests omit those restrictions and use native pathing;
 explicit false, zero and empty constraints remain explicit. Flat-ground paths,
 positive radius, interruption and incremental/complete resume were tested live.
 The subsequent ettin approach verified cross-level traversal in both directions
@@ -103,10 +103,9 @@ gaps. Gaps include human/tool pauses and are not labeled as proven LLM thinking.
 
 ## Controller connection and combat assessment
 
-The project Codex MCP configuration is recognized by `codex mcp get
-dwarf-fortress`; stdio initialization, 17-tool discovery and choices-only
-observation passed. The already-running controller needs a client/session
-reload to acquire the new tool set. Server launch respects persistent settings.
+The then-current MCP adapter passed stdio initialization, 17-tool discovery
+and choices-only observation. That server and its project configuration were
+removed in 0.26.0; CLI and Python are the supported controller interfaces.
 
 Strike receipts and unit inspection now share bounded native combat condition
 reads: blood, consciousness, functional limbs, body-part status and current

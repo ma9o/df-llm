@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 from dfharness.cli import main
 from dfharness.client import Client, render_observation
-from dfharness.mcp import TOOLS, Server
 from dfharness.state import compact_result
 from dfharness.views import character_brief
 
@@ -121,32 +120,13 @@ class CharacterStatusTests(unittest.TestCase):
         self.assertEqual(brief["character"]["inventory"][0]["contents_shown_in_full_view"], 0)
         self.assertIn("weight_unavailable", brief["character"]["inventory"][0])
 
-    def test_mcp_character_query_is_read_only_and_rejects_execution_options(self):
+    def test_character_queries_reject_execution_options_before_any_game_read(self):
         client = Client(port=1)
-        server = Server(client)
-        server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-        tool = next(t for t in TOOLS if t["name"] == "df_character_status")
-        self.assertTrue(tool["annotations"]["readOnlyHint"])
-        self.assertFalse(tool["annotations"]["destructiveHint"])
-        message = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {"name": "df_character_status", "arguments": {}},
-        }
-        with patch.object(client, "request", return_value=sheet()) as request:
-            result = server.handle(message)["result"]
-            self.assertFalse(result["isError"])
-            self.assertEqual(
-                json.loads(result["content"][0]["text"])["state_id"], "character-state"
-            )
-            self.assertEqual(
-                json.loads(result["content"][0]["text"])["character"]["encumbrance"],
-                sheet()["character"]["encumbrance"],
-            )
-            message["params"]["arguments"] = {"execution": {"acknowledge": True}}
-            self.assertTrue(server.handle(message)["result"]["isError"])
-            request.assert_called_once_with({"op": "character_status"})
+        with patch.object(client, "request") as request:
+            for query in (client.status, client.character_status, client.brief):
+                with self.subTest(query=query.__name__), self.assertRaises(TypeError):
+                    query(execution={"acknowledge": True})
+            request.assert_not_called()
 
     def test_cli_returns_the_character_sheet_without_dispatching(self):
         output = io.StringIO()
@@ -172,28 +152,6 @@ class CharacterStatusTests(unittest.TestCase):
                     self.assertIn("Carried weight: 98.46225 kg", output.getvalue())
                 else:
                     self.assertEqual(json.loads(output.getvalue()), sheet())
-
-    def test_mcp_status_alias_and_lightweight_readiness_tool(self):
-        client = Client(port=1)
-        server = Server(client)
-        server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-        for name, op in (("df_status", "character_status"), ("df_game_status", "status")):
-            tool = next(t for t in TOOLS if t["name"] == name)
-            self.assertTrue(tool["annotations"]["readOnlyHint"])
-            with (
-                self.subTest(tool=name),
-                patch.object(client, "request", return_value=sheet()) as request,
-            ):
-                result = server.handle(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "method": "tools/call",
-                        "params": {"name": name, "arguments": {}},
-                    }
-                )["result"]
-                self.assertFalse(result["isError"])
-                request.assert_called_once_with({"op": op})
 
     def test_text_preserves_every_section_including_new_and_nested_data(self):
         result = sheet()

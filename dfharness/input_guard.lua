@@ -17,7 +17,7 @@ local function canonical(value)
     end
     return '{'..table.concat(out,',')..'}'
 end
-return function(s,ui,native,effects_only)
+return function(s,ui,native,effects_only,checkpoint)
     local payload={schema=2,native=native}
     for _,k in ipairs({'screen','focus','world_frame','year','year_tick','save','turn_phase',
         'adventurer_id','adventure_menu','open_panels','position','map_origin','viewport','travel',
@@ -33,10 +33,17 @@ return function(s,ui,native,effects_only)
         payload.modal=modal
     end
     if not effects_only then payload.action_serial=s.action_serial end
+    if checkpoint then
+        -- Only the session checkpoint adapter uses this identity, after it
+        -- verifies a settled default interface. It is never an input guard.
+        -- World scope comes from DFHack's save-scoped persistent storage.
+        for _,key in ipairs({'world_frame','world_epoch','local_map_epoch','action_serial',
+            'save','viewport','dimensions'})do payload[key]=nil end
+    end
     -- Text remains a conservative fallback for undecoded screens/decisions.
     -- Explicit raw clicks/text are also resolved against their live UI by act.
     if not native.complete then payload.ui=ui.rows end
-    return 'n2:'..dfhack.internal.md5(canonical(payload))
+    return (checkpoint and 'p1:' or 'n2:')..dfhack.internal.md5(canonical(payload))
 end
 
 end

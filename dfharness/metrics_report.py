@@ -214,8 +214,8 @@ def report(paths, baseline=None, run=None, idle_gap=120):
         **current,
         "measurement": {
             "tokens": "Exact counts under the named local tokenizer, from the harness perspective: request=input, returned payload=output. Not provider usage; prompts, reasoning and controller thinking time are outside this boundary.",
-            "payload": "Canonical Python arguments / MCP params / CLI argv plus stdin; output is canonical Python JSON or actual CLI/MCP text. No payload text is stored in this log.",
-            "duration_ms": "Monotonic time through response production (including output flush and worker queueing for MCP stdio); tokenizer/log work follows. Python excludes client construction; CLI excludes interpreter/import startup.",
+            "payload": "Canonical Python arguments or CLI argv plus stdin; output is canonical Python JSON or actual CLI text. Historical records retain their original surface and format. No payload text is stored in this log.",
+            "duration_ms": "Monotonic time through response production (including CLI output flush); tokenizer/log work follows. Python excludes client construction; CLI excludes interpreter/import startup.",
             "measurement_ms": "Serialization and token counting, including a cold tokenizer load; excludes JSONL append. Reported separately from response duration.",
             "rpc": "Lua source and returned command text bytes, excluding protobuf framing. Every Client.request RPC is recorded, including readiness polls and transport errors. No token counts for internal traffic.",
             "p95": "Nearest-rank percentile. Null counts are unmeasured, never zero. Process termination can leave RPC traces without a completed interaction.",

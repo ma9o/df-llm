@@ -1,6 +1,6 @@
 [project]
 name = "df-llm"
-version = "0.25.0"
+version = "0.26.0"
 description = "Supervised LLM play of Dwarf Fortress through DFHack"
 readme = "README.md"
 authors = [

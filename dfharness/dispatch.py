@@ -310,7 +310,11 @@ def run_dispatch(
                 for k, v in summary.items()
                 if k not in ("action", "events", "prompts", "results")
             }
-        saved.accepted(workflow, send(receipt))
+        stored = send(receipt)
+        saved.accepted(workflow, stored)
+        if stored.get("checkpoint_unavailable"):
+            summary["checkpoint_unavailable"] = stored["checkpoint_unavailable"]
+            compact["checkpoint_unavailable"] = stored["checkpoint_unavailable"]
         return view if result_format == "full" else compact
 
     while True:

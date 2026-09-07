@@ -22,6 +22,22 @@ local names={}
 local function test(name,fn)
     local ok,err=pcall(fn);assert(ok,name..': '..tostring(err));names[#names+1]=name
 end
+test('native classifications preserve false and isolate missing predicates',function()
+    local u={}
+    local calls=0
+    for _,name in ipairs({'isDanger','isGreatDanger','isOpposedToLife','isAgitated',
+        'isWildlife','isTame','isInvader','isUndead','isCrazed'})do
+        env.dfhack.units[name]=function(v)assert(v==u);calls=calls+1;return false end
+    end
+    local r=m.classifications(u)
+    assert(r.available and calls==9 and r.values.isDanger==false and not r.unavailable)
+    env.dfhack.units.isDanger=function()return true end
+    env.dfhack.units.isTame=nil
+    env.dfhack.units.isCrazed=function()return 0 end
+    r=m.classifications(u)
+    assert(not r.available and r.values.isDanger and r.values.isGreatDanger==false)
+    assert(r.values.isTame==nil and r.values.isCrazed==nil and r.unavailable.isTame and r.unavailable.isCrazed)
+end)
 test('zero IDs/blood and empty wounds are known; order is canonical',function()
     local r=m.read({0,2},true)
     assert(r[1].unit_id==0 and r[1].available and r[1].blood_count==0 and r[1].wounds==2)

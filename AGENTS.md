@@ -52,8 +52,9 @@ own rules and refusals as facts to report rather than rules to reimplement.
   removing it first. Keep meaningful choices about targets and tactics with the
   controller. A missing native option is a factual blocker, never a list of
   speculative causes or an empty controller choice list.
-- Keep action discovery in shared schemas, exposed through MCP and the local
-  `actions` reference. Routine play must not require reading implementation code
+- Keep the controller interface in the Python client with a CLI front end.
+  Do not maintain a separate MCP server. Expose shared action schemas through
+  the local `actions` reference. Routine play must not require reading implementation code
   or independently reconstructing menu sequences.
 - Keep native menu bindings as execution adapters. Prefer objective receipts,
   factual blockers and collected results at the controller boundary. Expose
@@ -117,8 +118,12 @@ own rules and refusals as facts to report rather than rules to reimplement.
   not invalidate a known semantic selection.
 - Read only the fields owned by the active native interface mode; an inactive
   pointer can refer to freed state even when its struct field is readable.
-  Revoke execution progress and choice handles on world replacement, and scope
-  handles across process restarts. Local map reloads are not world replacement.
+  Revoke live execution leases and choice handles on world replacement, and scope
+  handles across process restarts. Restore progress only from that save's DFHack
+  persistent world data, at a verified fresh stage whose native checkpoint guard
+  matches. Never restore an in-flight input or reinterpret old UI/effect IDs.
+  Local map reloads are not world replacement. Persistent world data reaches
+  disk when the game saves; it is not an immediate save or a recovery journal.
 - Keep visibility predicates independent of the ASCII crop. Return all loaded
   visible units with explicit bounds, and stop delegated visibility checks when
   enumeration is truncated. Observation-window sizing is an execution mechanic;
@@ -126,8 +131,8 @@ own rules and refusals as facts to report rather than rules to reimplement.
   Coordinate targets in a sequence refer to its initial map, including stages
   that have not started yet; rebasing them is an execution mechanic.
 - Keep routine controller tools focused on semantic actions and explicit native
-  choices. Raw keys, clicks and full UI traces belong to the development MCP
-  toolset. Concise projections must identify omissions; comprehensive status
+  choices. Raw keys, clicks and full UI traces are explicit development
+  operations in CLI/Python. Concise projections must identify omissions; comprehensive status
   and full diagnostic traces remain available through their explicit queries.
 - A focused character query must skip omitted native profiles at the reader,
   not build comprehensive status and discard most of it at the controller.
@@ -215,6 +220,11 @@ Remove this section when the list is empty.
   a mismatched base before further input, and preserve full diagnostic receipts.
   Reuse a verified snapshot across mechanical stages until their reader needs
   change or native input requires a fresh observation.
+- Controller read deltas must name an exact content reference, independently of
+  the input state ID. Reuse the lossless transport delta format, bound the local
+  cache, and return a fresh full reading on expired or incompatible bases. Cache
+  failures must not turn a successful read into a retry. Keep comprehensive status
+  unchanged, preserve changed warnings/unknowns, and measure follow-up reads too.
 - While input is processing, narrow progress reads may collect reports and
   evaluate the controller's interruption predicates. Mark them separately from
   complete snapshots; they must never advance a snapshot revision, drive the
@@ -274,7 +284,7 @@ Remove this section when the list is empty.
   native readers with character status; do not require a full character query
   just to learn what the dispatched activity gained.
 
-- `status` is the comprehensive character query across CLI, Python, and MCP.
+- `status` is the comprehensive character query across CLI and Python.
   Keep the lightweight game/readiness query under `game-status` / `game_status`.
 - Include new character-related capabilities in the status report and its
   coverage metadata. Keep physical state, inventory, mind, relationships,

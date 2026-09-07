@@ -32,9 +32,9 @@ when to interrupt. The harness executes the intervening game inputs and checks
 the requested result.
 
 `settings` saves controller preferences in `.df-llm/controller.json`, shared by
-CLI, Python, and MCP. It does not send game input. Use `--settings PATH` or
+CLI and Python. It does not send game input. Use `--settings PATH` or
 `DFLLM_SETTINGS` for a separate controller profile. Settings are reread on each
-call, including by an already-running MCP server. Precedence is built-in,
+call, including by an existing Python client. Precedence is built-in,
 saved, client/CLI constructor overrides, then per-dispatch overrides. The
 built-in step/acknowledgement defaults are unchanged; the example above is an
 explicit controller choice. `settings --reset` restores the built-ins.
@@ -46,9 +46,9 @@ character status remain explicit queries.
 additional preferences. `settings --interrupt-on '{"blood_loss":true}'` saves
 controller interruption conditions; per-dispatch `interrupt_on` replaces that
 whole predicate object. Partial execution updates preserve other settings.
-MCP `df_settings` and `Client.settings(update=...)` use the same file.
+`Client.settings(update=...)` uses the same file.
 
-Prefer the short CLI/MCP operations in routine play. `look` is
+Prefer the short CLI operations in routine play. `look` is
 `observe --view concise`: ASCII terrain, visible units, current choices, held
 items, inventory count, burden, and the latest four relevant reports, with
 explicit omission metadata. It skips the full native inventory reader.
@@ -57,9 +57,24 @@ z-level, shape and material. `brief` retains equipment, needs and skill XP;
 `status` retains the comprehensive character contract. Decoded
 menus return native choices; unclassified interface states retain UI text.
 `observe --view choices` reads only the current menu or prompt, without the
-inventory, terrain or report history. The same view is available through Python
-and the normal MCP toolset.
+inventory, terrain or report history. The same view is available through Python.
 `observe --view full` retains detailed items and all 80 observed reports.
+Concise `look` and `unit` reads return a `read_ref`. Reuse it with
+`look --since REF` / `unit ID --since REF`, or the `since` argument in Python,
+to receive exact field changes. Unchanged readings are about 70 tokens. This
+reference identifies the complete reading, including its query scope; `state_id`
+remains the game-input guard. A missing, expired or incompatible base returns a
+fresh full reading with an explicit resync reason. The local cache keeps 32
+readings beside controller settings and adds no DFHack calls. Full queries and
+comprehensive `status` retain their existing contracts.
+
+Python controllers can reconstruct a delta with
+`dfharness.readings.apply_read(previous, response)`. It validates the base and
+result content hashes and applies the shared `set`/`fields`/`remove`/`entries`/
+`length` format, preserving null, false, zero and empty collections. See the
+[read efficiency review](docs/read-efficiency-review-2026-09-07.md) for measurements
+and the save/reload verification boundary.
+
 Internal dispatch execution reconstructs the full observation from versioned
 transport deltas, independently of the controller's reading preference. It
 collects reports after its last cursor instead of relying on the UI report tail.
@@ -69,11 +84,11 @@ their ASCII guard. Omitted buffers are marked and never represented as empty UI.
 
 `./dfctl actions` is the compact controller reference. `./dfctl actions strike`
 returns one action's exact schema and result semantics without contacting the
-game. Python `Client.actions(name)` and MCP `df_actions(name)` use the same
-schemas as the dispatch tool. Obtain target/body-part IDs with `unit` and weapon
+game. Python `Client.actions(name)` uses the same
+action reference as the CLI. Obtain target/body-part IDs with `unit` and weapon
 attack indices with `item`; routine play should not require source-code reads.
 
-`brief` / `df_brief` / `Client.brief()` is a separate character projection for
+`brief` / `Client.brief()` is a separate character projection for
 health, attributes, skills, equipment, load/burden, movement and needs. It labels
 omissions and retains unknown/truncated coverage. Its native reader skips omitted
 profiles and descendant item descriptions; shared readers still validate all
@@ -126,10 +141,9 @@ uses the verified key for that native message type.
 
 Read omitted information without executing anything:
 `dispatch-details ID --section events` (also `prompts`, `steps`, `summary`,
-`compact`, or `full`), `Client.dispatch_details(id, section)`, or
-`df_dispatch_details`. The native session retains 128 dispatches; expired records
+`compact`, or `full`) or `Client.dispatch_details(id, section)`. The native session retains 128 dispatches; expired records
 are explicit. Use `--log PATH` for a lasting JSONL trace. `--result-format full`
-on CLI/Python or development MCP retains the complete diagnostic action response.
+on CLI/Python retains the complete diagnostic action response.
 Duplicate requests return the original receipt; use the details query to inspect
 it instead of reconstructing the request.
 
@@ -161,15 +175,15 @@ for a tall tab), use `click X Y` for the intended occurrence.
 
 ## Comprehensive character status
 
-Use `./dfctl status`, MCP `df_status` with `{}`, or `Client.status()` for the
+Use `./dfctl status` or `Client.status()` for the
 current adventurer's comprehensive character report. `character-status`,
-`df_character_status`, and `Client.character_status()` return the same report.
+and `Client.character_status()` return the same report.
 JSON is the default; `--text` adds a reading summary and preserves every
 character section, including complete anatomy and item definitions.
 
-**Compatibility change in MCP 0.5.0 / character schema 2:** `status` now returns
+**Character schema 2:** `status` now returns
 the character report with game/input state nested under `status`. For the old
-lightweight readiness response, use `./dfctl game-status`, `df_game_status`, or
+lightweight readiness response, use `./dfctl game-status` or
 `Client.game_status()`. Routine observations and dispatch responses stay compact.
 
 The character sheet contains:
@@ -392,7 +406,7 @@ policy and event history. They never create nested dispatch leases.
 ./dfctl converse 10657 10660 --topic AskAboutCurrentState --mode complete --acknowledge
 ```
 
-The same actions work with `Client.act` and MCP `df_act`:
+The same actions work with `Client.act`:
 
 ```json
 {
@@ -529,10 +543,15 @@ configured data root, including CrossOver's per-user save directory. A filename
 edit is one mechanical input batch; full diagnostics record its native key count.
 Save-and-quit and timeline selection remain separate, unsupported objectives.
 
-`unit` / `df_unit` / `Client.unit(id)` inspects a visible character's health,
+`unit` / `Client.unit(id)` inspects a visible character's health,
 physical attributes, stored/effective skills, equipment, anatomy, affiliations,
-and native opponent reference. It does not infer hostility or predict victory.
-The concise default omits unflagged anatomy and detailed item definitions;
+and native opponent reference. The nine DFHack danger/wildlife/curse predicates
+are exposed as classifications, including false and unavailable values; they
+are not promises that a creature will attack or a prediction of victory.
+Comprehensive character `status` includes them under `affiliation.classifications`.
+The concise default retains every read body-part ID in `body.parts` (ID → name)
+and groups active `body.status_flags` by flag → part IDs. It skips detailed item
+definitions and container contents in the native reader;
 `unit ID --view full` returns the complete supported unit inspection. This is a
 bounded native-state view, not a promise of every NPC's hidden history or mind.
 Unloaded or invisible units return `available: false`; absent optional records,
@@ -686,6 +705,16 @@ unknown modes retain ASCII text and an explicit limitation.
 
 `navigation` / `df_navigation` returns current travel coordinates, the native
 site travel grid, and character-known group/beast rumors sorted by distance.
+Local current-site identity comes from `dfhack.world.getCurrentSite`. Travel
+with an offloaded map retains an explicit coordinate/bounds fallback, since that
+helper requires a loaded adventurer. Navigation and visible `inspect` queries
+read the tile's biome through `getTileBiomeRgn`, `getRegionBiome`, and
+`getBiomeType`, preserving native properties and failed reads. A biome does not
+establish that drinkable water is present.
+`locate figure HISTFIG_ID` / `locate artifact ARTIFACT_ID` calls the exported
+`gui/adv-finder` readers without opening its GUI. Results contain plain IDs and
+coordinates, with an explicit world-record scope; they do not replace the
+character-known rumor list or imply current visibility.
 For the current lair, it also exposes the native site's entrance in absolute
 coordinates and, when loaded, local coordinates with visibility. This is labelled
 `source=native_site_metadata`; absent entrance records and failed reads differ.
@@ -850,7 +879,7 @@ controller. Complete mode follows the submitted action and its explicit targets.
 ./dfctl respond stop --text
 
 # Defaults before the command; overrides after an action command.
-./dfctl --acknowledge mcp
+./dfctl settings --acknowledge
 ./dfctl --acknowledge key A_TALK --no-acknowledge --text
 ```
 
@@ -862,6 +891,22 @@ current native action/prompts; it does not recover an item or walking recipe.
 Each dispatch, including resume, uses controller defaults plus that call's
 overrides. Put persistent interruption rules in controller configuration.
 `observe`, `status`, `items`, and `wait-ready` remain read-only.
+
+`session` / `Client.session()` lists the save-scoped dispatch index and checkpoint
+eligibility. New dispatches store their index, workflow and receipts through
+DFHack `saveWorldData`/`getWorldData`; fixed slots retain 128 records of at most
+128 KiB each. Full observations remain in the live session/JSONL log. World data
+reaches disk with the **next game save**, so a crash before saving is not covered.
+After a restart or save reload, an explicit resume can continue at a verified
+fresh stage with matching native character, calendar, map and interface state.
+Older saves restore their own checkpoint, including superseded continuation IDs.
+Pending inputs and stages with mechanical progress retain diagnostics but cannot
+resume across reload; choice handles are always revoked. `resumable` in the index
+means a candidate requiring this state check. These recovery rules pass isolated
+save/reload fixtures; a live reload test is still pending while the human is playing.
+Storage failure preserves ordinary in-memory execution and is reported as
+`checkpoint_unavailable`. Resuming a saved candidate must first record that it
+has been superseded; failure at that point stops before game input.
 
 `interrupt_on` supports `blood_loss`, `new_wounds`, and `new_visible_units`
 booleans, plus `visible_unit_ids` and exact native `report_types` lists.
@@ -892,13 +937,13 @@ Full samples stay in diagnostic observations; compact blockers contain only the
 matched condition and its evidence. No extra watch reader runs for other dispatches.
 
 ```sh
-./dfctl --mode complete --acknowledge \
-  --interrupt-on '{"blood_loss":true,"new_wounds":true}' mcp
+./dfctl settings --mode complete --acknowledge \
+  --interrupt-on '{"blood_loss":true,"new_wounds":true}'
 ```
 
-`df_interrupt` / `interrupt` stops future harness inputs and preserves progress.
-The MCP server accepts status/observation and interruption requests while
-`df_act` is running; MCP cancellation also requests interruption. An input
+`interrupt ID` / `Client.interrupt(id)` stops future harness inputs and preserves
+progress. Another CLI process or Python thread can read state or interrupt while
+a dispatch runs. An input
 already submitted to the game is not undone or cancelled. Stopping a native
 long action still requires the controller's explicit game response. No core
 lock is held while waiting for the game or controller.
@@ -1009,7 +1054,7 @@ Those samples took 2.8 seconds of RPC time; payload reduction alone is not a
 guarantee of proportional latency reduction.
 
 The dispatch timeout defaults to 30 seconds, with a maximum of 300 (`--seconds`
-on CLI actions, `timeout` in Python/MCP). It is checked between RPC calls; a call
+on CLI actions, `timeout` in Python). It is checked between RPC calls; a call
 in progress has its own transport timeout, and returning does not cancel an
 ongoing game action. An unchanged prompt stops automation instead of sending
 repeated continues. The Continue/Stop/Finish input mapping is implemented but
@@ -1018,7 +1063,7 @@ remains **unverified live**; investigation is deferred until it appears again.
 ## Measure interactivity
 
 Measurements are off by default and separate from gameplay responses. Enable
-them to record controller calls across CLI, Python and MCP with durations, input
+them to record controller calls across CLI and Python with durations, input
 and output token counts, and correlated DFHack RPC costs. Logs contain counts
 and bounded action/target metadata, without request, reply or screen text.
 
@@ -1048,77 +1093,51 @@ This exposes both slow mechanics and thin receipts that require extra queries.
 
 Gaps are time outside the harness, including deliberation, human pauses and
 other tools. These are local payload token counts, not model-provider usage.
-See [measurement details](docs/measurement.md) for Python/MCP configuration,
+See [measurement details](docs/measurement.md) for Python configuration,
 episode boundaries, coverage and comparison limits.
 
 ## Connect an LLM
 
-Run `./dfctl mcp` as an MCP stdio server. It exposes seventeen controller tools:
+CLI and Python are the supported controller interfaces. The CLI delegates to
+`dfharness.client.Client`, so both use the same actions, validation, settings,
+readers and receipts. The separate MCP server and its configuration were removed
+in 0.26.0. No API key or model provider is required by the harness.
 
-| Tool | Purpose |
-|---|---|
-| `df_settings` | Read/save controller execution and output preferences |
-| `df_capabilities` | Probe runtime dependencies, verified adapters and remaining semantic coverage |
-| `df_actions` | Shared semantic action schemas and concise local reference |
-| `df_brief` | Explicit character projection for routine condition checks |
-| `df_unit` | Visible character inspection by ID |
-| `df_observe` | Concise ASCII terrain, creatures, native choices, recent reports |
-| `df_navigation` | Travel coordinates, native site grid and character-known leads |
-| `df_act` | Dispatch an action or resume it with controller-selected completion and acknowledgement policy |
-| `df_items` | Query nearby visible items and container contents in one call |
-| `df_item` | Inspect one carried or visible ground item by ID |
-| `df_dispatch_details` | Read saved events, prompts, steps or a full receipt without replaying input |
-| `df_interrupt` | Stop further inputs from an executing dispatch and preserve its progress |
-| `df_inspect` | Terrain, liquid depth, ground items, and creatures at a world tile |
-| `df_status` | Comprehensive read-only character report, section coverage, and current game/input status |
-| `df_character_status` | Alias for the comprehensive character report |
-| `df_game_status` | Lightweight mode, focus, panels/modal, position, active dispatch, and turn readiness |
-| `df_wait_ready` | Wait for an already submitted turn/action to settle |
+Start with the compact local `actions` reference and `look`. Use `actions NAME`
+for a focused action schema without a game read. Any controller that can run a
+command can send JSON to `./dfctl act`, including through stdin with `act -`.
+A Python controller can keep a client for successive calls:
 
-`./dfctl mcp --dev-tools` additionally exposes `df_keys`, raw `key`, `click`,
-`click_text`, `text` and `select_unit` actions, full observations and full action
-traces. CLI and Python retain these development operations. Normal MCP fixes
-observations to concise or explicit choices and receipts to compact even if the shared profile asks
-for full output. Explicit read-only `df_dispatch_details` remains available in
-normal MCP. It also exposes native choice handles and undelegated choices. This separates interface mechanics from controller decisions without
-changing completion, acknowledgement or interruption policy.
+```python
+from dfharness.client import Client
 
-[mcp.example.json](mcp.example.json) contains the configuration for this Mac, for
-clients that use the `mcpServers` JSON format. Other clients need the same command
-and arguments entered in their MCP settings. This project also has a Codex
-[MCP configuration](.codex/config.toml), recognized by `codex mcp get dwarf-fortress`.
-An already-running controller must reload its session/client to discover newly
-configured tools. The server's initialize, tools/list and choices observation
-have been verified over stdio. Persistent controller settings own execution
-defaults; the server command does not override them. No API key
-or model provider is required by the harness itself.
-
-Example `df_act` arguments to delegate the remaining steps of the current action:
-
-```json
-{
-  "action": {"type": "resume"},
-  "execution": {"mode": "complete", "acknowledge": true, "max_steps": 32}
-}
+game = Client(port=5001)
+scene = game.observe()
+result = game.act(
+    {"type": "resume"},
+    expect=scene["state_id"],
+    execution={"mode": "complete", "acknowledge": True, "max_steps": 32},
+)
 ```
 
-Recommended instructions for the controlling model:
+This delegates settlement of the current action. To resume a saved workflow,
+pass its returned `resume` action instead. Persist repeated policy through
+`settings` / `game.settings(update=...)`. A persistent Python process also caches
+the prepared tokenizer; DFHack RPC connections remain per call.
 
-> Start with df_observe. Choose objectives, equipment, replacements, and threat
-> policy from structured state. Use df_items/df_item to compare equipment, then
-> dispatch pickup/equip/wield/drop/stow or walk_to with explicit targets. Choose
-> execution.mode and acknowledge to delegate execution mechanics; use interrupt_on
-> for your chosen factual interruption conditions. Read outcome, changes, events,
-> and blockers. Use one active dispatch at a time; df_interrupt can stop it while
-> it runs. Continue with resume when appropriate. Pass the latest
-> state_id as expect. Unsupported actions return a concrete blocker; use the
-> development interface when investigating a missing execution adapter.
-> After a timeout or lost reply, observe before explicitly resuming; never blindly
-> repeat the original action.
+Controller instructions:
 
-Use `df_brief` for routine character condition checks and `df_status` for the
-comprehensive report, including relationships, abilities and obligations. Use
-`df_game_status` for lightweight readiness checks.
+> Choose objectives, targets, equipment and interruption conditions from the
+> structured state. Dispatch semantic actions or sequences with the chosen
+> completion policy. Read values and said first, then outcome, blocker and changes.
+> Use one active dispatch at a time. Pass the latest state_id as expect; resume
+> unfinished work using its returned resume action. After a timeout or lost reply,
+> observe before explicitly resuming; never blindly repeat the original input.
+
+Use `brief` for routine character checks, `status` for the comprehensive report,
+and `game-status` for readiness. `unit ID` supplies target/body-part IDs and
+`item ID` supplies weapon attacks. Request full views or dispatch details for
+diagnosis; raw keys and clicks remain explicit development operations.
 
 Read `status.modal` before acting. `{"type":"dismiss"}` acknowledges **one** help
 or announcement page; with `acknowledge: true`, the dispatch also handles subsequent
@@ -1180,7 +1199,7 @@ if view["status"]["can_move"]:
 
 ```mermaid
 flowchart LR
-    L[LLM] -->|MCP, CLI, or Python| P[Native Python client]
+    L[LLM] -->|CLI or Python| P[Native Python client]
     P -->|localhost TCP / DFHack RPC| D[DFHack inside CrossOver]
     D -->|Lua and simulated game inputs| G[Running Dwarf Fortress]
     G -->|Character layer and structured state| D
@@ -1225,9 +1244,11 @@ flowchart LR
   A duplicate returns the recorded dispatch result with a fresh observation and
   `dispatch_replayed: true`; it sends no additional inputs. If the earlier
   dispatch was interrupted before recording its result, it reports that state
-  and requires an explicit resume by dispatch ID to continue. Checkpoints survive
-  client restarts, but are lost on game restart or buffer eviction. Resume checks
-  save/adventurer identity; local item/route recipes must be reassessed after
+  and requires an explicit resume by dispatch ID to continue. Live checkpoints
+  survive client restarts. After game restart/reload, the save-scoped index can
+  restore only verified fresh-stage checkpoints with matching native state;
+  in-flight inputs and evicted records cannot resume. Resume checks world and
+  adventurer identity; local item/route recipes must be reassessed after
   travel changes the local coordinate system. Replaying a duplicate returns a
   cached outcome alongside fresh state, not a newly verified completion.
   There are no automatic action retries. Input errors can have partial effects,
@@ -1256,8 +1277,7 @@ The default structured observer uses public DFHack readers and its own explicit
 terrain legend, so it does not need the temporary rendering-mode change.
 
 For an explicit developer escape hatch, `./dfhack-run COMMAND ARG...` and
-`./dfctl run COMMAND ARG...` invoke DFHack directly. Arbitrary commands/Lua are
-not exposed by the MCP tools.
+`./dfctl run COMMAND ARG...` invoke DFHack directly for development.
 
 ## Starting the game later
 
@@ -1337,14 +1357,14 @@ settings and disabled play metrics. Individual modules can follow the command,
 for example `uv run python -m tests.run tests.test_dispatch -v`. This prevents
 saved gameplay policy and test fixtures from contaminating each other. The suite covers fragmented
 TCP replies, protocol failures, Unicode, malformed packets, action readiness,
-MCP lifecycle/argument validation, policy defaults and overrides, delegated prompt
+CLI/client argument validation, policy defaults and overrides, delegated prompt
 chains, unchanged prompts, execution limits, event retention, readiness races,
 resumption, and duplicate requests without additional game input. Workflow tests
 cover identical item labels, automatic scrolling, equipment replacement order,
 container selection, failed postconditions, compact results, caller-selected
-interruptions, lost replies, and concurrent MCP interruption/cancellation.
+interruptions, lost replies, and external interruption with progress retained.
 
-Character-query tests cover read-only CLI/client/MCP routing, argument rejection,
+Character-query tests cover read-only CLI/client routing, argument rejection,
 missing-adventurer results, and readable output preserving impairments,
 encumbrance, zero/partial weights, and unavailable fields.
 Interaction/settings tests cover target IDs, map picking, dialogue scrolling,
@@ -1358,7 +1378,7 @@ Isolated native
 menu fixtures in `tests/interactions.lua` additionally check native IDs, ASCII
 bindings, ellipses, duplicate labels, scrolling, and unsupported combat states.
 `python3 -m tests.live_character_status --port 5001` additionally
-checks the CLI, MCP, and Python query against the running adventurer and verifies
+checks the CLI and Python query against the running adventurer and verifies
 unchanged game time, input serial, health, and inventory. It runs isolated
 Lua fixtures for wound/anatomy mapping, syndrome effects, false/zero values,
 effective stats, truncation, missing soul/body data, container/stack accounting,
@@ -1390,15 +1410,13 @@ Live validation on the user's adventure verified:
 - Rejecting movement in a menu and input based on an old observation.
 - Deduplicating an action without sending the key a second time.
 - The supplied native ASCII capture and continued game responsiveness.
-- MCP initialization, tool discovery, live observation, opening the character
-  sheet through `df_act`, and returning to normal gameplay through `df_act`.
 - Eleven conversations, each with a greeting, feelings question, and troubles
   question; 33 direct replies matched to their speakers/conversations.
 - Selecting conversation targets by unit ID, extracting untruncated menus,
   dismissing help and multi-page announcements, and blocking movement in a prompt.
 - Opening Talk and acknowledging its help page in one CLI dispatch, then replaying
   the same request without additional inputs.
-- Overriding the MCP acknowledgement default to return at the help page, then
+- Overriding the controller acknowledgement default to return at the help page, then
   resuming with completion and inherited acknowledgement enabled. These menu
   checks left position, health, and game time unchanged and returned to gameplay.
 - Looting room containers through the pickup menu, scrolling item lists, replacing
@@ -1411,8 +1429,6 @@ Live validation on the user's adventure verified:
   restored the original boot and dropped the test replacement.
 - Holding an item with `wield` and stowing it into a specified backpack with
   `stow`; help text was extracted from native state without screenshots.
-- Interrupting a live walking dispatch after its first input through MCP while
-  concurrent status still responded, then resuming to the specified tile.
 - A caller-specified visible-unit condition stopping a dispatch before any input,
   a route returning at an occupied target, and a controller occupancy override
   completing the return. Position `(70,68,128)`, equipment, and backpack contents
@@ -1449,5 +1465,4 @@ future harness inputs, but cannot undo effects during an already submitted nativ
 action or recover reports the game has discarded.
 
 Protocol/API references: [DFHack remote interface](https://docs.dfhack.org/en/stable/docs/dev/Remote.html),
-[DFHack Lua API](https://docs.dfhack.org/en/stable/docs/dev/Lua%20API.html),
-[MCP stdio transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
+[DFHack Lua API](https://docs.dfhack.org/en/stable/docs/dev/Lua%20API.html).

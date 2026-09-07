@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 
 from dfharness.client import ASSETS, Client, lua_string, render_observation
-from dfharness.mcp import Server
 from dfharness.rpc import run_command
 from dfharness.state import flatten
 from dfharness.views import character_brief
@@ -22,6 +21,7 @@ def native_fixtures(port):
         ("native_ui.lua", "native_ui.lua"),
         ("wire.lua", "wire.lua"),
         ("session.lua", "session.lua"),
+        ("checkpoints.lua", "checkpoints.lua"),
         ("runtime.lua", "runtime.lua"),
         ("screen.lua", "screen.lua"),
         ("hud.lua", "../tests/hud_reference.lua"),
@@ -39,6 +39,7 @@ def native_fixtures(port):
         ("report_events.lua", "report_events.lua"),
         ("fastcombat.lua", "fastcombat.lua"),
         ("environment.lua", "environment.lua"),
+        ("geography.lua", "geography.lua"),
         ("movement.lua", "movement.lua"),
         ("pathing.lua", "pathing.lua"),
         ("input_guard.lua", "input_guard.lua"),
@@ -49,6 +50,7 @@ def native_fixtures(port):
     ):
         fixture = Path(__file__).with_name(fixture_name).read_text()
         extra_readers = {
+            "checkpoints.lua": ["wire.lua"],
             "interactions.lua": ["native_ui.lua"],
             "movement.lua": ["native_ui.lua"],
             "aim.lua": ["native_ui.lua"],
@@ -255,26 +257,6 @@ def main():
         e["path"] for e in character["unavailable"]
     }
     assert "character" not in game.game_status()
-    server = Server(game)
-    server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-    for tool in ("df_status", "df_character_status", "df_game_status", "df_brief"):
-        response = server.handle(
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {"name": tool, "arguments": {}},
-            }
-        )["result"]
-        assert not response["isError"], response
-        value = json.loads(response["content"][0]["text"])
-        if tool == "df_game_status":
-            assert "character" not in value
-        elif tool == "df_brief":
-            assert value == brief
-        else:
-            assert value["character"] == character, tool
-
     fixtures = native_fixtures(game.port)
     after = game.observe(view="full")
     for field in (

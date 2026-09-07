@@ -10,17 +10,20 @@ function M.visible_units(loaded,project)
     local out={units=h.array(),units_available=true,units_truncated=false}
     if not loaded then return out end -- No locally loaded units is a known set.
     local ok,err=pcall(function()
-        local scanned=0
-        for _,unit in ipairs(df.global.world.units.active)do
-            if scanned>=32768 then out.units_truncated=true;break end
-            scanned=scanned+1
-            if dfhack.units.isVisible(unit) and not dfhack.units.isHidden(unit) then
-                if #out.units>=500 then out.units_truncated=true;break end
-                local id=unit.id
-                assert(type(id)=='number' and id>=0 and id<=2147483647 and id==math.floor(id),
-                    'Native visible unit identity is unavailable')
-                out.units[#out.units+1]=project and project(unit) or {id=id}
-            end
+        -- The native helper scans active units internally. Bound that work too,
+        -- and query the entire loaded map, independently of the ASCII crop.
+        if #df.global.world.units.active>32768 then out.units_truncated=true;return end
+        local x,y,z=dfhack.maps.getTileSize()
+        assert(x>0 and y>0 and z>0,'Loaded map bounds are unavailable')
+        local units=dfhack.units.getUnitsInBox(0,0,0,x-1,y-1,z-1,function(unit)
+            return dfhack.units.isVisible(unit) and not dfhack.units.isHidden(unit)
+        end)
+        for _,unit in ipairs(units)do
+            if #out.units>=500 then out.units_truncated=true;break end
+            local id=unit.id
+            assert(type(id)=='number' and id>=0 and id<=2147483647 and id==math.floor(id),
+                'Native visible unit identity is unavailable')
+            out.units[#out.units+1]=project and project(unit) or {id=id}
         end
     end)
     if not ok then out.units_available=false;out.units_unavailable=tostring(err):sub(1,180) end

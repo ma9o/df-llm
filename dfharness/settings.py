@@ -1,4 +1,4 @@
-"""Controller-authored settings shared by CLI, Python and long-lived MCP clients."""
+"""Controller-authored settings shared by CLI and long-lived Python clients."""
 
 import json
 import os

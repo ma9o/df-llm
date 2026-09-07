@@ -93,7 +93,7 @@ Final validation: `make check` passed **435 Python tests** plus lint, format,
 type, dead-code, Lua lint, shell and package-build checks. **276 isolated Lua
 fixtures** passed inside DFHack. The campaign was restored at `(94,80,134)`
 with **5600/5600 blood, zero wounds and zero exhaustion**; the sandbox unit is
-absent. The full CLI/Python/MCP character check verified read-only agreement
+absent. The full CLI/Python/MCP character check at that release verified read-only agreement
 across all 29 sections. No reference-clone overlays reappeared after reload.
 
 Active grapple counts are available, but this build exposes the underlying
@@ -107,3 +107,6 @@ The earlier schema-3 projection comparison re-rendered seven identical strike
 receipts: **15.5% fewer tokens in total**, median 874 to 741, retaining outcomes,
 XP and current impairments. This is a projection measurement, not a claim about
 simulation latency. Full traces preserve the native evidence behind each value.
+
+The separate MCP server was removed in 0.26.0. Historical validation above
+records the interfaces tested then; current checks exercise CLI and Python.

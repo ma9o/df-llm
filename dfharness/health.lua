@@ -4,6 +4,25 @@ local function build(...)
 -- Explicit unit-health watches. Bounded native reads; no affiliation inference.
 local h=...
 local M={}
+function M.classifications(unit)
+    local out={available=true,values={},source='dfhack.units'}
+    for _,name in ipairs({'isDanger','isGreatDanger','isOpposedToLife','isAgitated',
+        'isWildlife','isTame','isInvader','isUndead','isCrazed'})do
+        local ok,value=pcall(function()
+            local fn=dfhack.units[name]
+            assert(type(fn)=='function','Native predicate is unavailable')
+            local result=fn(unit)
+            assert(type(result)=='boolean','Native predicate did not return a boolean')
+            return result
+        end)
+        if ok then out.values[name]=value
+        else
+            out.available=false;out.unavailable=out.unavailable or {}
+            out.unavailable[name]=tostring(value):sub(1,180)
+        end
+    end
+    return out
+end
 function M.creature_flags(unit,names)
     local out={available=true,flags={}}
     local ok,caste=pcall(dfhack.units.getCasteRaw,unit)

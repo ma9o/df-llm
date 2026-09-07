@@ -9,6 +9,19 @@ def pick(value, fields):
     return {key: deepcopy(value[key]) for key in fields if key in value}
 
 
+def reading_attributes(attributes):
+    return {
+        key: {
+            a["name"]: a["value"]
+            if "value" in a and a.get("effective") == a["value"]
+            else pick(a, ("value", "effective"))
+            for a in values
+        }
+        for key, values in attributes.items()
+        if isinstance(values, list)
+    }
+
+
 def reading_coatings(coatings):
     # Presence, material, phase and location inform the next decision. Exact
     # amounts and temperatures stay in full observations/status, not every tick.
@@ -296,7 +309,15 @@ def concise_observation(view, event_detail="task", force_types=()):
             out["map"]["legend"] = {k: v for k, v in out["map"]["legend"].items() if k in symbols}
     if view.get("navigation"):
         out["navigation"] = pick(
-            view["navigation"], ("position", "current_site", "leads", "leads_source", "truncated")
+            view["navigation"],
+            (
+                "position",
+                "current_site",
+                "current_site_query",
+                "leads",
+                "leads_source",
+                "truncated",
+            ),
         )
     for key in ("menu", "conversation", "combat"):
         if view.get(key):
@@ -356,16 +377,7 @@ def character_brief(report):
     brief["identity"] = pick(
         c.get("identity", {}), ("english_name", "age_years", "profession", "hist_figure_id")
     )
-    brief["attributes"] = {
-        key: {
-            a["name"]: a["value"]
-            if "value" in a and a.get("effective") == a["value"]
-            else pick(a, ("value", "effective"))
-            for a in values
-        }
-        for key, values in c.get("attributes", {}).items()
-        if isinstance(values, list)
-    }
+    brief["attributes"] = reading_attributes(c.get("attributes", {}))
     if isinstance(c.get("skills"), list):
         brief["skills"] = {
             s["name"]: dict(
@@ -472,6 +484,7 @@ def unit_brief(report):
                 "alive",
                 "on_ground",
                 "identity",
+                "classifications",
                 "health",
                 "attributes",
                 "skills",
@@ -484,20 +497,53 @@ def unit_brief(report):
                 "inventory_truncated",
             ),
         )
-        out["unit"]["inventory"] = [
+        brief = out["unit"]
+        brief["attributes"] = reading_attributes(u.get("attributes", {}))
+        if isinstance(u.get("skills"), list):
+            brief["skills"] = {
+                s["name"]: pick(s, ("rating_name", "effective", "experience")) for s in u["skills"]
+            }
+        brief["inventory"] = [
             dict(reading_item(i), **pick(i, ("armor", "weapon"))) for i in u.get("inventory", [])
         ]
-        out["unit"]["body"] = pick(u.get("body", {}), ("size",))
+        brief["body"] = pick(u.get("body", {}), ("size",))
         if "parts" in u.get("body", {}):
             # Strike requires native body-part IDs. Hiding healthy anatomy
             # forced a second, full query before the controller could act.
-            out["unit"]["body"]["parts"] = [pick(p, ("id", "name")) for p in u["body"]["parts"]]
-            out["unit"]["body"]["parts_with_status_flags"] = [
-                p for p in u["body"]["parts"] if p.get("active_status_flags")
-            ]
+            brief["body"]["parts"] = {str(p["id"]): p["name"] for p in u["body"]["parts"]}
+            flags = {}
+            for part in u["body"]["parts"]:
+                for flag in part.get("active_status_flags", []):
+                    flags.setdefault(flag, []).append(part["id"])
+            brief["body"]["status_flags"] = flags
+        if isinstance(u.get("condition"), dict):
+            brief["condition"] = {**u.get("health", {}), **u["condition"]}
+            brief.pop("health", None)
+            # The full anatomy read can cover more injuries than the bounded
+            # combat summary. Group each flag once, never drop the extra parts
+            # or repeat their names. Unmatched summary evidence stays visible.
+            parts = {p["id"]: p for p in u.get("body", {}).get("parts", [])}
+            conditions = brief["condition"].get("parts_with_status")
+            if (
+                parts
+                and isinstance(conditions, list)
+                and all(
+                    part["id"] in parts
+                    and parts[part["id"]]["name"] == part["name"]
+                    and set(part["flags"]) <= set(parts[part["id"]].get("active_status_flags", []))
+                    for part in conditions
+                )
+            ):
+                brief["condition"].pop("parts_with_status")
+                brief["condition"].pop("parts_omitted", None)
+        brief["query_coverage"] = pick(
+            u.get("coverage", {}),
+            ("complete", "unavailable_count", "truncated_count", "not_queried"),
+        )
+        brief.pop("coverage", None)
     out.update(
         projection=True,
-        omitted="Detailed item/container definitions; use unit(view='full'). Body-part IDs remain available for targeting.",
+        omitted="Item definitions/contents and duplicate labels: unit(view='full'). body.parts maps native IDs to names; status_flags maps flags to part IDs. Source truncations remain in coverage. Classifications do not predict an attack.",
     )
     return out
 
@@ -542,6 +588,8 @@ def render_view(value):
                 if key in m:
                     lines.append(key + ": " + json.dumps(m[key], ensure_ascii=False))
         for key in (
+            "read_ref",
+            "read_cache",
             "omitted",
             "reports_omitted",
             "report_omissions",

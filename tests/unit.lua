@@ -8,6 +8,7 @@ local reads=0
 local env=setmetatable({dfhack={units={}}},{__index=_ENV})
 local reader=assert(load(source,'unit coverage fixture','t',env))
 local helpers={array=array,text=function(v)return v end,health={
+    classifications=function()return {available=false,values={isDanger=false},unavailable={isTame='Missing API'}}end,
     combat_condition=function()reads=reads+1;return result end,
     creature_flags=function()return {available=true,complete=true,flags={NOSTUN=false}}end}}
 local function run()
@@ -37,6 +38,15 @@ test('condition truncation remains partial even when every field was readable',f
     for _,missing in ipairs(r.truncated)do
         if missing.path=='condition.grapples' then found=true;assert(missing.omitted==3)end
     end
+    assert(found)
+end)
+test('classification failures and native brief omissions remain explicit',function()
+    helpers.brief=true
+    local r=run()
+    assert(r.classifications.values.isDanger==false and not r.coverage.complete)
+    assert(r.coverage.scope=='brief' and #r.coverage.not_queried==2)
+    local found=false
+    for _,v in ipairs(r.unavailable)do if v.path=='classifications.isTame' then found=true end end
     assert(found)
 end)
 return {passed=#names,tests=names,game_inputs=0}

@@ -2,7 +2,6 @@ import io
 import json
 import os
 import tempfile
-import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -13,7 +12,6 @@ from unittest.mock import patch
 
 from dfharness.cli import main
 from dfharness.client import Client
-from dfharness.mcp import Server
 from dfharness.metrics import Recorder, active, intent, serialize
 from dfharness.metrics_tokens import encoding_path, load_encoding, prepare, tokenizer
 from dfharness.program import MARKER
@@ -117,52 +115,31 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(row["outcome"], "error")
         self.assertNotIn("Missing item", self.path.read_text())
 
-    def test_mcp_counts_tool_text_once_and_emits_before_tokenizer_work(self):
-        server = Server(self.client(metrics_episode="fight"))
-        server.initialized = True
-        message = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {"name": "df_actions", "arguments": {"name": "drop"}},
-        }
-        emitted = []
-
-        def emit(response):
-            self.encoder.assert_not_called()
-            emitted.append(response)
-
-        response = server.handle(
-            message, emit=emit, received_ns=time.perf_counter_ns() - 100_000_000
-        )
+    def test_cli_emits_before_tokenizer_work_and_records_the_wall_interval(self):
+        output = io.StringIO()
+        with (
+            patch("sys.stdout", output),
+            patch.object(output, "flush", side_effect=self.encoder.assert_not_called) as flush,
+        ):
+            self.assertEqual(
+                main(["--port", "1", "--metrics", str(self.path), "actions", "drop"]), 0
+            )
+        flush.assert_called_once_with()
         (row,) = self.rows()
-        self.assertEqual(row["operation"], "df_actions")
-        self.assertEqual(row["surface"], "mcp")
-        self.assertEqual(
-            row["output_tokens"], len(response["result"]["content"][0]["text"].encode())
-        )
-        self.assertEqual(len(emitted), 1)
-        self.assertGreaterEqual(row["duration_ms"], 100)
+        self.assertEqual(row["output_tokens"], len(output.getvalue().encode()))
         wall = (
             datetime.fromisoformat(row["finished_at"]) - datetime.fromisoformat(row["at"])
         ).total_seconds() * 1000
         self.assertAlmostEqual(wall, row["duration_ms"] + row["measurement_ms"], delta=0.02)
 
-    def test_mcp_invalid_choice_is_an_error_and_does_not_call_the_game(self):
-        server = Server(self.client())
-        server.initialized = True
-        with patch.object(Client, "act") as act:
-            response = server.handle(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": "df_act", "arguments": {"action": {"type": "unknown"}}},
-                }
-            )
-        self.assertTrue(response["result"]["isError"])
-        act.assert_not_called()
-        self.assertEqual(self.rows()[0]["outcome"], "error")
+    def test_python_invalid_action_is_measured_without_calling_the_game(self):
+        client = self.client()
+        with patch.object(client, "request") as request, self.assertRaises(ValueError):
+            client.act({"type": "unknown"})
+        request.assert_not_called()
+        (row,) = self.rows()
+        self.assertEqual(row["outcome"], "error")
+        self.assertEqual(row["rpc_calls"], 0)
 
     def test_all_rpc_polls_are_correlated_without_duplicate_controller_records(self):
         bridge = Bridge(scene("start"), [scene("end")])
