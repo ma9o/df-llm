@@ -10,14 +10,98 @@ from pathlib import Path
 from dfharness.client import ASSETS, Client, lua_string, render_observation
 from dfharness.mcp import Server
 from dfharness.rpc import run_command
+from dfharness.state import flatten
+from dfharness.views import character_brief
+
+
+def native_fixtures(port):
+    # Real Lua/DF enum bindings with isolated, synthetic character data. No
+    # injured units or other test state are inserted into the running world.
+    fixtures = []
+    for fixture_name, reader_name in (
+        ("native_ui.lua", "native_ui.lua"),
+        ("wire.lua", "wire.lua"),
+        ("session.lua", "session.lua"),
+        ("runtime.lua", "runtime.lua"),
+        ("screen.lua", "screen.lua"),
+        ("hud.lua", "../tests/hud_reference.lua"),
+        ("burden.lua", "burden.lua"),
+        ("entry.lua", "entry.lua"),
+        ("items.lua", "items.lua"),
+        ("rest.lua", "rest.lua"),
+        ("aim.lua", "aim.lua"),
+        ("saving.lua", "saving.lua"),
+        ("health.lua", "health.lua"),
+        ("progress.lua", "progress.lua"),
+        ("attack.lua", "attack.lua"),
+        ("reports.lua", "reports.lua"),
+        ("environment.lua", "environment.lua"),
+        ("movement.lua", "movement.lua"),
+        ("input_guard.lua", "input_guard.lua"),
+        ("interactions.lua", "interactions.lua"),
+        ("character_reader.lua", "character.lua"),
+        ("character_profiles.lua", "character_details.lua"),
+        ("character_calculations.lua", "character_calculations.lua"),
+    ):
+        fixture = Path(__file__).with_name(fixture_name).read_text()
+        extra_readers = {
+            "interactions.lua": ["native_ui.lua"],
+            "movement.lua": ["native_ui.lua"],
+            "aim.lua": ["native_ui.lua"],
+            "health.lua": ["wire.lua"],
+            "character_calculations.lua": ["burden.lua"],
+        }
+        arguments = [
+            lua_string((ASSETS / name).read_text())
+            for name in [reader_name, *extra_readers.get(fixture_name, [])]
+        ]
+        source = (
+            "local r=assert(load("
+            + lua_string(fixture)
+            + "))("
+            + ",".join(arguments)
+            + ");print('__CHARACTER_TESTS__'..require('json').encode(r,{pretty=false}))"
+        )
+        output = run_command("lua", source, port=port)
+        lines = [
+            line[len("__CHARACTER_TESTS__") :]
+            for line in output.splitlines()
+            if line.startswith("__CHARACTER_TESTS__")
+        ]
+        assert len(lines) == 1, output
+        report = json.loads(lines[0])
+        if isinstance(report, dict):
+            assert report["passed"] == len(report["tests"]), report
+            fixtures.extend(report["tests"])
+        else:
+            assert isinstance(report, list) and report, report
+            fixtures.extend(report)
+    return fixtures
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int)
+    parser.add_argument(
+        "--fixtures-only",
+        action="store_true",
+        help="Run isolated native fixtures while a human is playing",
+    )
     args = parser.parse_args()
     game = Client(port=args.port)
-    before = game.observe()
+    if args.fixtures_only:
+        fixtures = native_fixtures(game.port)
+        print(
+            json.dumps({"passed": len(fixtures), "game_inputs": 0, "fixtures": fixtures}, indent=2)
+        )
+        return
+    before = game.observe(view="full")
+    native = game.request({"op": "observe", "ui_mode": "native"})
+    for field in (before.keys() | native.keys()) - {"ui", "ui_state_id"}:
+        assert native.get(field) == before.get(field), ("native execution read", field)
+    if not native["ui"]["captured"]:
+        assert "rows" not in native["ui"] and native["ui"]["omitted"]
+        assert "ui_state_id" not in native
     result = game.status()
     assert result["available"], result
     assert result["schema_version"] == 2
@@ -60,13 +144,34 @@ def main():
     # fails verification instead of disappearing among expected limitations.
     expected_unavailable = {
         "movement.displayed_speed",
+        "encumbrance.burden",
         "combat.preferences",
         "appearance.description_text",
     }
+    if character["encumbrance"]["weight_complete"] is False:
+        expected_unavailable.add("encumbrance.total_weight_kg")
+        assert character["encumbrance"]["unweighed_items"] or character["truncated"]
+    # Validate the native aggregate scan against the independently serialized
+    # item graph. A programming/read error must not pass as expected dirty data.
+    if not character.get("inventory_truncated") and not any(
+        i.get("contents_truncated") for i in flatten(character["inventory"])
+    ):
+        dirty = {
+            root["id"]
+            for root in character["inventory"]
+            if any(i.get("weight_computed") is not True for i in flatten([root]))
+        }
+        assert {i.get("id") for i in character["encumbrance"]["unweighed_items"]} == dirty
+        assert character["encumbrance"]["weight_complete"] is (not dirty)
     assert {entry["path"] for entry in character["unavailable"]} <= expected_unavailable, character[
         "unavailable"
     ]
     assert character["id"] == before["adventurer"]["id"]
+    dawn = character["activity"]["next_dawn"]
+    assert dawn["available"], dawn
+    assert type(dawn["remaining_calendar_ticks"]) is int
+    assert 1 <= dawn["remaining_calendar_ticks"] <= 1200
+    assert 0 <= dawn["phase"] < 2400 and dawn["phase"] % 2 == 0
     for field, value in before["adventurer"]["health"].items():
         assert character["health"][field] == value, field
     assert len(character["attributes"]["physical"]) == 6
@@ -90,12 +195,14 @@ def main():
     else:
         assert "total_weight_kg" not in encumbrance
     assert encumbrance["capacity"]["available"] and encumbrance["load_penalty"]["available"]
-    assert encumbrance["burden"]["available"]
-    assert (
-        encumbrance["burden"]["compared_weight_kg"]
-        == encumbrance["load_penalty"]["compared_weight_kg"]
-    )
-    assert "Burden: " + encumbrance["burden"]["label"] in render_observation(result)
+    burden = encumbrance["burden"]
+    assert burden["source"] == "dfhack_lua_unit_burden"
+    if burden["available"]:
+        assert burden["label"] in ("Unburdened", "Burdened", "Overburdened")
+        assert "Burden: " + burden["label"] in render_observation(result)
+    else:
+        assert burden["reason"] and "label" not in burden
+    assert burden["compared_weight_kg"] == encumbrance["load_penalty"]["compared_weight_kg"]
     calculated = character["movement"]["effective_speed"]
     assert calculated["available"]
     assert math.isclose(calculated["value"], 1000 / calculated["movement_delay"])
@@ -131,10 +238,20 @@ def main():
         cli_character = json.loads(cli.stdout)["character"]
         assert cli_character == character, command
     assert game.character_status()["character"] == character
+    brief = game.brief()
+    projected = character_brief(result)
+    for field, value in projected["character"].items():
+        if field not in {"full_report_coverage", "unavailable", "truncated"}:
+            assert brief["character"].get(field) == value, ("native brief", field)
+    assert "full_report_coverage" not in brief["character"]
+    assert len(brief["omitted_sections"]) == 20
+    assert {e["path"] for e in brief["character"]["unavailable"]} <= {
+        e["path"] for e in character["unavailable"]
+    }
     assert "character" not in game.game_status()
     server = Server(game)
     server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-    for tool in ("df_status", "df_character_status", "df_game_status"):
+    for tool in ("df_status", "df_character_status", "df_game_status", "df_brief"):
         response = server.handle(
             {
                 "jsonrpc": "2.0",
@@ -147,40 +264,13 @@ def main():
         value = json.loads(response["content"][0]["text"])
         if tool == "df_game_status":
             assert "character" not in value
+        elif tool == "df_brief":
+            assert value == brief
         else:
             assert value["character"] == character, tool
 
-    # Real Lua/DF enum bindings with isolated, synthetic character data. No
-    # injured units or other test state are inserted into the running world.
-    fixtures = []
-    for fixture_name, reader_name in (
-        ("character_reader.lua", "character.lua"),
-        ("character_profiles.lua", "character_details.lua"),
-        ("character_calculations.lua", "character_calculations.lua"),
-    ):
-        fixture = Path(__file__).with_name(fixture_name).read_text()
-        source = (
-            "local r=assert(load("
-            + lua_string(fixture)
-            + "))("
-            + lua_string((ASSETS / reader_name).read_text())
-            + ");print('__CHARACTER_TESTS__'..require('json').encode(r,{pretty=false}))"
-        )
-        output = run_command("lua", source, port=game.port)
-        lines = [
-            line[len("__CHARACTER_TESTS__") :]
-            for line in output.splitlines()
-            if line.startswith("__CHARACTER_TESTS__")
-        ]
-        assert len(lines) == 1, output
-        report = json.loads(lines[0])
-        if isinstance(report, dict):
-            assert report["passed"] == len(report["tests"]), report
-            fixtures.extend(report["tests"])
-        else:
-            assert isinstance(report, list) and report, report
-            fixtures.extend(report)
-    after = game.observe()
+    fixtures = native_fixtures(game.port)
+    after = game.observe(view="full")
     for field in (
         "action_serial",
         "world_frame",

@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
-from dfharness.cli import main
+import os
+import sys
+from pathlib import Path
+
+# Use the project's installed dependencies when launched outside its venv.
+environment = Path(__file__).resolve().parent / ".venv"
+interpreter = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+if interpreter.exists() and Path(sys.prefix).resolve() != environment.resolve():
+    os.execv(str(interpreter), [str(interpreter), *sys.argv])
+
+from dfharness.cli import main  # noqa: E402 -- select the project interpreter before imports.
 
 raise SystemExit(main())

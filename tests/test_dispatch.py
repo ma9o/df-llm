@@ -2,9 +2,10 @@ import unittest
 from copy import deepcopy
 from unittest.mock import patch
 
-from dfharness.client import Client
+from dfharness.policy import MAX_DISPATCH_INPUTS, execution_policy, interruption
 from dfharness.rpc import DFHackError
 from tests.support import Bridge
+from tests.support import FullClient as Client
 
 HELP = {"kind": "help", "button": "Okay", "dismissible": True}
 MORE = {"kind": "announcement", "button": "More", "dismissible": True}
@@ -30,6 +31,57 @@ def report(number):
 
 
 class DispatchTests(unittest.TestCase):
+    def test_delegated_dismiss_uses_the_native_guard_for_fully_decoded_help(self):
+        before = view("native-help", HELP)
+        before["ui_state_id"] = "u2:blinking-background"
+        b = Bridge(before, [view("done")])
+        c = Client(port=1, execution={"mode": "complete", "acknowledge": True})
+        with patch.object(c, "request", side_effect=b):
+            r = c.act({"type": "resume"})
+        self.assertEqual(r["dispatch"]["outcome"], "completed")
+        sent = next(call for call in b.calls if call["op"] == "act")
+        self.assertEqual(sent["expect"], before["state_id"])
+
+    def test_controller_excludes_named_units_only_from_new_visibility_interruptions(self):
+        before, after = view("before"), view("after")
+        before["map"] = {"units": []}
+        after["map"] = {"units": [{"id": 2}]}
+        policy = execution_policy(
+            {"interrupt_on": {"new_visible_units": True, "new_visible_units_except": [2]}}
+        )
+        self.assertIsNone(interruption(before, after, [], policy))
+        after["map"]["units"].append({"id": 3})
+        self.assertIn("[3]", interruption(before, after, [], policy)["reason"])
+        policy["interrupt_on"]["visible_unit_ids"] = [2]
+        policy["interrupt_on"]["new_visible_units"] = False
+        self.assertIn("visible_unit_ids", interruption(before, after, [], policy)["reason"])
+        with self.assertRaises(ValueError):
+            execution_policy({"interrupt_on": {"new_visible_units_except": [-1]}})
+
+    def test_visibility_interruptions_cover_units_outside_the_ascii_crop_and_unknown_bounds(self):
+        before, after = view("before"), view("after")
+        before["map"] = {"units": []}
+        after["map"] = {"units": [{"id": 2, "in_map": False}]}
+        policy = execution_policy({"interrupt_on": {"new_visible_units": True}})
+        self.assertIn("new_visible_units", interruption(before, after, [], policy)["reason"])
+        after["map"].update(units=[], units_truncated=True)
+        self.assertIn(
+            "cannot be fully evaluated", interruption(before, after, [], policy)["reason"]
+        )
+        self.assertIsNone(interruption(before, after, [], execution_policy()))
+
+    def test_reloaded_player_is_not_a_new_encounter_but_explicit_ids_remain_literal(self):
+        before, after = view("offloaded"), view("reloaded")
+        before["map"] = {"units": []}
+        after["status"]["adventurer_id"] = 0
+        after["map"] = {"units": [{"id": 0}]}
+        policy = execution_policy({"interrupt_on": {"new_visible_units": True}})
+        self.assertIsNone(interruption(before, after, [], policy))
+        after["map"]["units"].append({"id": 2})
+        self.assertIn("[2]", interruption(before, after, [], policy)["reason"])
+        policy = execution_policy({"interrupt_on": {"visible_unit_ids": [0]}})
+        self.assertIn("visible_unit_ids", interruption(before, after, [], policy)["reason"])
+
     def scripted(self, views, *, policy=None, defaults=None, action=None):
         client = Client(port=1, execution=defaults)
         action = action or {"type": "key", "key": "A_TALK"}
@@ -214,6 +266,50 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(result["effect_id"], "finished")
         self.assertEqual(polls, 3)
 
+    def test_processing_backoff_is_bounded_and_resets_for_each_native_input(self):
+        initial, first, second = view("initial"), view("one", OKAY), view("two")
+        bridge = Bridge(initial, [first, second])
+        counts = {}
+
+        def poll(game, request):
+            count = len(game.inputs)
+            if count:
+                counts[count] = counts.get(count, 0) + 1
+                if counts[count] <= 5:
+                    return {"ready": False, "view": deepcopy(game.view)}
+            return None
+
+        bridge.poll_hook = poll
+        client = Client(port=1)
+        with (
+            patch.object(client, "request", side_effect=bridge),
+            patch("dfharness.dispatch.time.sleep") as pause,
+        ):
+            receipt = client.act(
+                {"type": "wait"}, execution={"mode": "complete", "acknowledge": True}
+            )
+        self.assertEqual(receipt["dispatch"]["outcome"], "completed")
+        self.assertEqual(
+            [c.args[0] for c in pause.call_args_list], [0.05, 0.1, 0.2, 0.25, 0.25] * 2
+        )
+        self.assertEqual(len(bridge.inputs), 2)
+
+    def test_processing_pause_cannot_extend_beyond_the_dispatch_deadline(self):
+        busy = view("busy")
+        busy["status"]["ready_for_input"] = False
+        bridge = Bridge(view("before"), [busy])
+        client = Client(port=1)
+        with (
+            patch.object(client, "request", side_effect=bridge),
+            patch("dfharness.dispatch.time.monotonic", side_effect=[0, 0, 0.99, 1.01]),
+            patch("dfharness.dispatch.time.sleep") as pause,
+        ):
+            receipt = client.act({"type": "wait"}, timeout=1)
+        self.assertEqual(receipt["dispatch"]["outcome"], "limit_reached")
+        pause.assert_called_once()
+        self.assertAlmostEqual(pause.call_args.args[0], 0.01)
+        self.assertEqual(len(bridge.inputs), 1)
+
     def test_invalid_policy_is_rejected_before_dispatch(self):
         client = Client(port=1)
         for policy in (
@@ -222,7 +318,7 @@ class DispatchTests(unittest.TestCase):
             {"acknowledge": "yes"},
             {"max_steps": True},
             {"max_steps": 0},
-            {"max_steps": 65},
+            {"max_steps": MAX_DISPATCH_INPUTS + 1},
         ):
             with self.subTest(policy=policy), patch.object(client, "request") as request:
                 with self.assertRaises(ValueError):

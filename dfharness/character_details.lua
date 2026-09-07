@@ -1,3 +1,6 @@
+--@ module=true
+--luacheck: globals factory
+local function build(...)
 -- Character-owned profiles and capabilities. Only loaded by character queries.
 local u,out,h=...
 local array,text,read,list,label=h.array,h.text,h.read,h.list,h.label
@@ -5,6 +8,38 @@ local function object() return require('json.internal'):newObject{} end
 local function missing(path,reason) h.unavailable(path,reason);return {available=false,reason=reason} end
 local budget={remaining=50000}
 local omitted=array()
+local function coverage()
+    local brief=h.profile=='brief'
+    out.coverage={sections=array(),unavailable_count=#out.unavailable,truncated_count=#out.truncated,
+        complete=#out.unavailable==0 and #out.truncated==0,unexpanded_references=omitted,
+        scope=brief and 'brief' or 'Character state and character-owned profiles; world references are not recursively expanded',
+        profile_limits={nodes=50000,depth=10,vector_entries=4096,string_bytes=16000}}
+    if brief then out.coverage.not_queried=array() end
+    local function belongs(path,key)
+        return path==key or path:sub(1,#key+1)==key..'.' or path:sub(1,#key+1)==key..'['
+    end
+    for _,key in ipairs({'identity','affiliation','health','body','conditions','physiology','appearance','attributes',
+            'skills','performance_skills','needs','personality','preferences','inventory','encumbrance','movement',
+            'relationships','companions','reputation','career','knowledge','abilities','combat','senses','activity','possessions','obligations','history','native_sheet'}) do
+        if brief and not h.requested(key) then
+            out.coverage.not_queried[#out.coverage.not_queried+1]=key
+            out[key]=nil
+        else
+            local value=out[key]
+            local entry={section=key,status=(value==nil or value.available==false) and 'unavailable' or 'available',
+                unavailable_count=0,truncated_count=0}
+            if value and value.present==false then entry.present=false end
+            for _,missing_field in ipairs(out.unavailable) do
+                if belongs(missing_field.path,key) then entry.unavailable_count=entry.unavailable_count+1 end
+            end
+            for _,truncation in ipairs(out.truncated) do
+                if belongs(truncation.path,key) then entry.truncated_count=entry.truncated_count+1 end
+            end
+            if entry.status=='available' and (entry.unavailable_count>0 or entry.truncated_count>0) then entry.status='partial' end
+            out.coverage.sections[#out.coverage.sections+1]=entry
+        end
+    end
+end
 
 -- Reflect only explicitly selected character profiles. Check field metadata
 -- before touching a value; never enumerate an untagged union or follow a
@@ -120,10 +155,35 @@ end
 local function native_flags(v)
     local r=object();for k,value in pairs(v) do if type(k)=='string' then r[k]=value end end;return r
 end
+local caste=h.caste
+-- Shared physical and combat readings, before the optional large profiles.
+out.physiology=object()
+out.physiology.effective_creature_flags=read('physiology.effective_creature_flags',function()
+    local r=object()
+    for _,name in ipairs({'NO_EAT','NO_DRINK','NO_SLEEP','NOBREATHE','NOEXERT','NOPAIN','BLOODSUCKER',
+            'NOT_LIVING','DIURNAL','NOCTURNAL','CREPUSCULAR','ALL_ACTIVE'}) do
+        local base=caste.flags[name]
+        local ok,added=pcall(function() return u.uwss_add_caste_flag[name] end)
+        local ok2,removed=pcall(function() return u.uwss_remove_caste_flag[name] end)
+        r[name]=not (ok2 and removed) and ((ok and added) or base) or false
+    end
+    return r
+end)
+if h.burden then h.burden.apply(u,out,h)end
+if h.calculations then
+    h.calculations.apply(u,out,h)
+else
+    out.physiology.interpreted_needs=missing('physiology.interpreted_needs','Character calculation module was not supplied')
+end
+out.combat=object()
+if h.interfaces then out.combat.interface=h.interfaces.combat end
+out.combat.opponent=profile(u,'opponent','combat.opponent')
+out.combat.attacker_ids=profile(u.status,'attacker_ids','combat.attacker_ids')
+if h.profile=='brief' then coverage();return out end
+
 local hf=read('historical_figure',function() return df.historical_figure.find(u.hist_figure_id) end)
 local info=hf and hf.info
 local soul=u.status.current_soul
-local caste=h.caste
 out.affiliation=out.affiliation or object()
 
 out.identity.native=section(u,{'profession','profession2','adjective','population_id','breed_id','hist_figure_id2',
@@ -166,23 +226,6 @@ for _,part in ipairs(out.body.parts or {}) do
     part.temperature_raw=read(p..'.temperature_raw',function() return snapshot(u.status2.body_part_temperature[part.id],p..'.temperature_raw') end)
 end
 
-out.physiology=object()
-out.physiology.effective_creature_flags=read('physiology.effective_creature_flags',function()
-    local r=object()
-    for _,name in ipairs({'NO_EAT','NO_DRINK','NO_SLEEP','NOBREATHE','NOEXERT','NOPAIN','BLOODSUCKER',
-            'NOT_LIVING','DIURNAL','NOCTURNAL','CREPUSCULAR','ALL_ACTIVE'}) do
-        local base=caste.flags[name]
-        local ok,added=pcall(function() return u.uwss_add_caste_flag[name] end)
-        local ok2,removed=pcall(function() return u.uwss_remove_caste_flag[name] end)
-        r[name]=not (ok2 and removed) and ((ok and added) or base) or false
-    end
-    return r
-end)
-if h.calculations then
-    h.calculations.apply(u,out,h)
-else
-    out.physiology.interpreted_needs=missing('physiology.interpreted_needs','Character calculation module was not supplied')
-end
 out.needs.has_unmet_psychological_needs=read('needs.has_unmet_psychological_needs',function()
     assert(soul,'No current soul');return soul.personality.flags.has_unmet_needs
 end)
@@ -331,11 +374,8 @@ out.abilities.granted=read('abilities.granted',function()
     end)
 end)
 
-out.combat=object()
 out.combat.natural_attacks=profile(u.body.body_plan,'attacks','combat.natural_attacks')
-out.combat.opponent=profile(u,'opponent','combat.opponent')
 out.combat.last_hit=profile(u,'last_hit','combat.last_hit')
-out.combat.attacker_ids=profile(u.status,'attacker_ids','combat.attacker_ids')
 out.combat.attacker_countdowns=profile(u.status,'attacker_cntdn','combat.attacker_countdowns')
 out.combat.wrestling=profile(u.status,'wrestle_items','combat.wrestling')
 out.combat.side_id=u.enemy.combat_side_id
@@ -369,11 +409,17 @@ out.activity.current_job=read('activity.current_job',function()
     return {id=job.id,type=label('job_type',job.job_type),flags=snapshot(job.flags,'activity.current_job.flags')}
 end)
 out.activity.memberships=section(u,{'social_activities','conversations','activities','individual_drills'},'activity.memberships')
+if h.interfaces then out.activity.conversation_interface=h.interfaces.conversation end
 out.activity.travel=profile(u.enemy,'travel_log','activity.travel')
 out.activity.adventure=read('activity.adventure',function()
     return section(df.global.adventure,{'wait_timer','long_action_duration','player_control_state','tactical_mode',
-        'sleep_hours','sleep_until_dawn','started_sleep_at_dawn','sleep_sleep','sleeping_indoors','sleeping_underground'},'activity.adventure')
+        'sleeping','sleep_interrupt','local_sleep_origination','sleep_hours','sleep_until_dawn',
+        'started_sleep_at_dawn','sleep_sleep','sleeping_indoors','sleeping_underground'},'activity.adventure')
 end)
+if h.next_dawn then
+    out.activity.next_dawn=h.next_dawn
+    if not h.next_dawn.available then h.unavailable('activity.next_dawn',h.next_dawn.reason) end
+end
 out.history.reports=read('history.reports',function()
     local result=array()
     for kind=0,#u.reports.log-1 do
@@ -500,29 +546,10 @@ else
     out.appearance.description_text=missing('appearance.description_text',
         'Native description is not populated for this adventurer; structured appearance is supplied without opening menus')
 end
-out.coverage={sections=array(),unavailable_count=#out.unavailable,truncated_count=#out.truncated,
-    complete=#out.unavailable==0 and #out.truncated==0,unexpanded_references=omitted,
-    scope='Character state and character-owned profiles; world references are not recursively expanded',
-    profile_limits={nodes=50000,depth=10,vector_entries=4096,string_bytes=16000}}
-local function belongs(path,key)
-    return path==key or path:sub(1,#key+1)==key..'.' or path:sub(1,#key+1)==key..'['
-end
-for _,key in ipairs({'identity','affiliation','health','body','conditions','physiology','appearance','attributes',
-        'skills','performance_skills','needs','personality','preferences','inventory','encumbrance','movement',
-        'relationships','companions','reputation','career','knowledge','abilities','combat','senses','activity','possessions','obligations','history','native_sheet'}) do
-    local value=out[key]
-    local entry={section=key,status=(value==nil or value.available==false) and 'unavailable' or 'available',
-        unavailable_count=0,truncated_count=0}
-    if value and value.present==false then entry.present=false end
-    for _,missing_field in ipairs(out.unavailable) do
-        if belongs(missing_field.path,key) then entry.unavailable_count=entry.unavailable_count+1 end
-    end
-    for _,truncation in ipairs(out.truncated) do
-        if belongs(truncation.path,key) then entry.truncated_count=entry.truncated_count+1 end
-    end
-    if entry.status=='available' and (entry.unavailable_count>0 or entry.truncated_count>0) then entry.status='partial' end
-    out.coverage.sections[#out.coverage.sections+1]=entry
-end
+coverage()
 out.semantics.profiles='Native character-owned records; enum_labels annotate numeric enums. present=false is an absent optional profile. World pointers are not followed'
 out.semantics.item_value='DFHack base item value without a specific trader; not a guaranteed sale price'
 return out
+
+end
+if dfhack_flags and dfhack_flags.module then factory=build else return build(...) end

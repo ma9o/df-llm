@@ -6,110 +6,15 @@ Spec: https://modelcontextprotocol.io/specification/2025-11-25
 
 import json
 import sys
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from threading import Lock
 
+from .actions import ACTIONS, COORD, EXECUTION, SETTINGS, STRING, obj
+from .metrics import Recorder
 from .rpc import DispatchError
-
-
-def obj(properties=None, required=()):
-    return {
-        "type": "object",
-        "properties": properties or {},
-        "required": list(required),
-        "additionalProperties": False,
-    }
-
-
-STRING = {"type": "string"}
-COORD = {"type": "integer", "minimum": 0}
-POSITION = obj({"x": COORD, "y": COORD, "z": COORD}, ("x", "y", "z"))
-INTERRUPT = obj(
-    {
-        "blood_loss": {"type": "boolean"},
-        "new_wounds": {"type": "boolean"},
-        "new_visible_units": {"type": "boolean"},
-        "visible_unit_ids": {"type": "array", "items": COORD, "maxItems": 100},
-        "report_types": {"type": "array", "items": STRING, "maxItems": 100},
-    }
-)
-EXECUTION = obj(
-    {
-        "mode": {"enum": ["step", "complete"]},
-        "acknowledge": {"type": "boolean"},
-        "max_steps": {"type": "integer", "minimum": 1, "maximum": 64},
-        "interrupt_on": INTERRUPT,
-    }
-)
-ACTIONS = [
-    obj(
-        {
-            "type": {"const": "move"},
-            "direction": {"enum": ["n", "s", "e", "w", "ne", "nw", "se", "sw", "up", "down"]},
-        },
-        ("type", "direction"),
-    ),
-    obj({"type": {"const": "wait"}}, ("type",)),
-    obj({"type": {"const": "dismiss"}}, ("type",)),
-    obj({"type": {"const": "resume"}, "dispatch_id": STRING}, ("type",)),
-    obj({"type": {"const": "select_option"}, "option_id": STRING}, ("type", "option_id")),
-    obj(
-        {"type": {"const": "action_prompt"}, "choice": {"enum": ["continue", "stop", "finish"]}},
-        ("type", "choice"),
-    ),
-    obj({"type": {"const": "key"}, "key": STRING}, ("type", "key")),
-    obj({"type": {"const": "select_unit"}, "unit_id": COORD}, ("type", "unit_id")),
-    obj(
-        {
-            "type": {"const": "click"},
-            "x": COORD,
-            "y": COORD,
-            "button": {"enum": ["left", "right", "middle"]},
-        },
-        ("type", "x", "y"),
-    ),
-    obj({"type": {"const": "click_text"}, "text": STRING}, ("type", "text")),
-    obj(
-        {"type": {"const": "text"}, "text": {"type": "string", "minLength": 1, "maxLength": 200}},
-        ("type", "text"),
-    ),
-]
-for name in ("pickup", "remove", "drop"):
-    ACTIONS.append(obj({"type": {"const": name}, "item_id": COORD}, ("type", "item_id")))
-for name in ("equip", "wield"):
-    ACTIONS.append(
-        obj(
-            {
-                "type": {"const": name},
-                "item_id": COORD,
-                "replace": {"type": "array", "items": COORD, "maxItems": 16},
-                "disposition": {"enum": ["hold", "drop", "stow"]},
-                "container_id": COORD,
-                "body_part_id": COORD,
-            },
-            ("type", "item_id"),
-        )
-    )
-ACTIONS += [
-    obj(
-        {"type": {"const": "stow"}, "item_id": COORD, "container_id": COORD},
-        ("type", "item_id", "container_id"),
-    ),
-    obj(
-        {
-            "type": {"const": "walk_to"},
-            "x": COORD,
-            "y": COORD,
-            "z": COORD,
-            "allow_occupied": {"type": "boolean"},
-            "max_liquid_depth": {"type": "integer", "minimum": 0, "maximum": 7},
-            "blocked_tiles": {"type": "array", "items": POSITION, "maxItems": 500},
-        },
-        ("type", "x", "y", "z"),
-    ),
-]
 
 
 def tool(name, description, schema, read_only=True):
@@ -126,6 +31,55 @@ def tool(name, description, schema, read_only=True):
 
 
 TOOLS = [
+    tool(
+        "df_actions",
+        "Read the compact action reference without contacting the game. Supply name for an action's exact schema and result semantics. Shared with CLI actions and Python Client.actions.",
+        obj({"name": STRING}),
+    ),
+    tool(
+        "df_dispatch_details",
+        "Read saved events, prompts, steps or a full dispatch record without executing or replaying any action. Native session retention is 128 dispatches; unavailable/expired records are explicit.",
+        obj(
+            {
+                "dispatch_id": STRING,
+                "section": {"enum": ["events", "prompts", "steps", "summary", "full", "compact"]},
+            },
+            ("dispatch_id",),
+        ),
+    ),
+    tool(
+        "df_settings",
+        "Read or save controller settings shared by CLI, Python and MCP. "
+        "Saved settings apply on the next call; constructor and per-dispatch overrides take precedence. "
+        "No game inputs. Supply update to persist execution policy, timeout or output preferences; reset starts from built-ins.",
+        obj({"update": SETTINGS, "reset": {"type": "boolean"}}),
+        False,
+    ),
+    tool(
+        "df_brief",
+        "Read a concise character projection: health, load/burden, movement, needs, skills and equipment. "
+        "Skips omitted native profiles; coverage applies only to queried fields. "
+        "df_status remains the comprehensive read-only report. Unknowns and truncation are preserved.",
+        obj(),
+    ),
+    tool(
+        "df_capabilities",
+        "Read native dependency availability, execution adapter verification, action coverage and limits. "
+        "New interface open flags are discovered at runtime. Presence of symbols does not prove future-version behavior. No game input.",
+        obj(),
+    ),
+    tool(
+        "df_unit",
+        "Inspect one currently visible unit by ID: health, physical attributes, skills, equipment, body parts, "
+        "affiliations and native opponent state. No hostility inference or threat rating; missing/truncated data are explicit.",
+        obj({"unit_id": COORD, "view": {"enum": ["concise", "full"]}}, ("unit_id",)),
+    ),
+    tool(
+        "df_navigation",
+        "Read current travel coordinates, native site travel grid with legal direction masks, and character-known group/beast rumors sorted by distance. "
+        "The controller chooses targets and assesses hostility/risk. No game inputs or world-map omniscience; rumor locations are leads, not verified current enemies.",
+        obj({"limit": {"type": "integer", "minimum": 1, "maximum": 100}}),
+    ),
     tool(
         "df_status",
         "Read the complete supported character report and current game/input status, including health, physiology, "
@@ -158,8 +112,8 @@ TOOLS = [
     ),
     tool(
         "df_observe",
-        "Read UI text, an ASCII map, health/inventory, visible creatures, full conversation labels, and recent reports with speaker/activity IDs. "
-        "Coordinates are zero-based. Map origin + column/row gives world coordinates; UI clicks use separate UI cells.",
+        "Read an ASCII map, health/inventory, visible creatures, native choices and recent reports with speaker/activity IDs. "
+        "Coordinates are zero-based. Map origin + column/row gives local map coordinates. Routine output is concise; view=choices reads only current decisions. Undecoded decisions retain UI text.",
         obj(
             {
                 "width": {"type": "integer", "minimum": 1, "maximum": 101},
@@ -167,27 +121,22 @@ TOOLS = [
                 "center": obj({"x": COORD, "y": COORD, "z": COORD}, ("x", "y", "z")),
                 "map": {"type": "boolean"},
                 "radius": {"type": "integer", "minimum": 0, "maximum": 50},
+                "view": {"enum": ["concise", "full", "choices"]},
+                "event_detail": {"enum": ["task", "all"]},
+                "reports_after": {"type": "integer", "minimum": -1},
+                "report_limit": {"type": "integer", "minimum": 1, "maximum": 4096},
             }
         ),
     ),
     tool(
         "df_act",
-        "Dispatch a game action under the controller's execution policy and return its outcome, steps, events, and observation. "
-        "execution.mode=complete executes the entire requested workflow; step executes one mechanical step plus delegated acknowledgements. "
-        "execution.acknowledge=true delegates help/More/Okay pages. Settings apply to every action; no risk classification is inferred. "
-        "pickup/equip/wield/remove/drop/stow accept item IDs and verify inventory postconditions. "
-        "equip/wield replace only explicitly supplied IDs; disposition is hold (default), drop, or stow into container_id. "
-        "walk_to routes within the observed local z-level; allow_occupied, max_liquid_depth, and blocked_tiles are caller constraints. "
-        "No threats or equipment upgrades are selected by the harness. interrupt_on evaluates only caller-specified factual conditions. "
-        "resume with dispatch_id continues the saved recipe, including after interruption or a limit, without restarting it. "
-        "move is one adventure step; wait is a short in-game wait; key uses exact interface_key names. "
-        "dismiss acknowledges one detected help/announcement page; inspect status.modal afterward. "
-        "click_text clicks a unique visible label. select_unit clicks a visible unit by ID only in the conversation creature picker. "
-        "text types printable ASCII, not Enter. "
-        "Use expect=last state_id to reject stale observations. request_id deduplicates the last 128 dispatches. "
-        "max_steps counts actual game inputs, including automatic responses. Compact changes/events are the default; request result_format=full for the full observation. "
-        "Read dispatch.outcome: semantic completion verifies the requested postconditions. "
-        "A timeout does not mean the action failed; observe or resume before retrying.",
+        "Execute a semantic objective or sequence under the controller's completion and interruption policy. "
+        "The harness handles approach, native choices, prerequisites and delegated prompts. "
+        "Use df_actions(name) for a focused schema and result contract. "
+        "drop/stow remove worn items first; item results include load and contents integrity; strike results include target condition. "
+        "Read values and said, then outcome/blocker/changes. Completion of a strike attempt does not imply a hit. "
+        "Persist repeated policy with df_settings. Resume unfinished dispatches by ID; never blindly repeat an uncertain input. "
+        "Raw inputs require development tools. Full traces are available through df_dispatch_details.",
         obj(
             {
                 "action": {"oneOf": ACTIONS},
@@ -196,6 +145,7 @@ TOOLS = [
                 "execution": EXECUTION,
                 "timeout": {"type": "number", "minimum": 0.1, "maximum": 300},
                 "result_format": {"enum": ["compact", "full"]},
+                "event_detail": {"enum": ["task", "all"]},
             },
             ("action",),
         ),
@@ -233,6 +183,22 @@ TOOLS = [
         obj({"action_id": STRING, "timeout": {"type": "number", "minimum": 0.1, "maximum": 60}}),
     ),
 ]
+
+
+DEVELOPMENT_ACTIONS = {"key", "click", "click_text", "text", "select_unit"}
+DEVELOPMENT_TOOLS = deepcopy(TOOLS)
+TOOLS = [deepcopy(t) for t in TOOLS if t["name"] != "df_keys"]
+for definition in TOOLS:
+    properties = definition["inputSchema"]["properties"]
+    if definition["name"] == "df_act":
+        properties["action"]["oneOf"] = [
+            a
+            for a in properties["action"]["oneOf"]
+            if a["properties"]["type"]["const"] not in DEVELOPMENT_ACTIONS
+        ]
+        properties["result_format"] = {"enum": ["compact"]}
+    elif definition["name"] == "df_observe":
+        properties["view"] = {"enum": ["concise", "choices"]}
 
 
 def validate(value, schema, path="arguments"):
@@ -280,18 +246,56 @@ def validate(value, schema, path="arguments"):
     ):
         raise ValueError(f"{path} has an invalid length")
     if kind == "array":
-        if len(value) > schema.get("maxItems", float("inf")):
-            raise ValueError(f"{path} has too many entries")
+        if not schema.get("minItems", 0) <= len(value) <= schema.get("maxItems", float("inf")):
+            raise ValueError(f"{path} has an invalid number of entries")
         for index, item in enumerate(value):
             validate(item, schema["items"], f"{path}[{index}]")
 
 
 class Server:
-    def __init__(self, client):
+    def __init__(self, client, development=False):
         self.client = client
+        self.development = development
+        self.tools = DEVELOPMENT_TOOLS if development else TOOLS
         self.initialized = False
 
-    def handle(self, message):
+    def handle(self, message, *, original=None, received_ns=None, emit=None):
+        request = message if original is None else original
+        method = request.get("method", "invalid") if isinstance(request, dict) else "invalid"
+        params = request.get("params", {}) if isinstance(request, dict) else request
+        operation = (
+            params.get("name", method)
+            if method == "tools/call" and isinstance(params, dict)
+            else method
+        )
+        recorder = getattr(self.client, "metrics", None) or Recorder()
+        with recorder.interaction("mcp", operation, params, started_ns=received_ns) as span:
+            response = self._handle(message)
+            if response is not None:
+                result = response.get("result", {})
+                if response.get("error") or result.get("isError"):
+                    span.outcome = "error"
+                    if response.get("error"):
+                        span.fields["code"] = response["error"]["code"]
+                content = result.get("content")
+                if isinstance(content, list):
+                    span.respond(
+                        "\n".join(
+                            block["text"] for block in content if block.get("type") == "text"
+                        ),
+                        text=True,
+                    )
+                    span.fields["output_format"] = "mcp_tool_text"
+                else:
+                    span.respond(response.get("error", result))
+                    span.fields["output_format"] = "canonical_json"
+            else:
+                span.outcome = "notification"
+            if emit is not None:
+                emit(response)
+            return response
+
+    def _handle(self, message):
         if (
             not isinstance(message, dict)
             or message.get("jsonrpc") != "2.0"
@@ -315,42 +319,45 @@ class Server:
                 version = "2025-11-25"
             result = {
                 "protocolVersion": version,
-                "serverInfo": {"name": "df-llm", "version": "0.6.1"},
+                "serverInfo": {"name": "df-llm", "version": "0.21.0"},
                 "capabilities": {"tools": {"listChanged": False}},
-                "instructions": "Observe first. Send one action at a time and inspect its resulting observation. "
-                "Use named interface keys or unique text labels to navigate menus. "
-                "The controller chooses objectives, equipment, replacements, disposition, and threat/interruption policy. "
-                "Choose execution.mode=complete to delegate the entire action workflow; use step for incremental supervision. "
-                "Use dispatch.resume_action to continue an unfinished recipe. df_interrupt can stop an executing dispatch. "
-                "Use df_items and df_item to compare items, then dispatch pickup/equip/wield/drop/stow by ID. "
-                "Use df_status (alias df_character_status) for the comprehensive character report; df_game_status is a lightweight readiness check. "
-                "Choose execution.acknowledge=true to automate help/announcement acknowledgements. "
-                "Read dispatch.outcome and its preserved events/prompts. Unknown choices return to you. "
-                "select_unit targets a creature only in the conversation picker. "
-                "Match report speaker_id and activity_id to identify direct replies. "
-                "The ASCII map is a semantic terrain view; inventory and tile inspection provide details. "
-                "Coordinate systems for UI clicks and world tiles are different. "
-                "Do not automatically repeat an action after a timeout.",
+                "instructions": "Observe the scene with df_observe. Use df_actions for the action reference and df_actions(name) for exact fields. "
+                "The controller chooses targets, tactics and interruption predicates; the harness executes prerequisites and verifies results. "
+                "Use sequence to compose actions under one policy and budget. Persist mode=complete and acknowledge with df_settings when desired. "
+                "Read values and said first, then outcome, blocker and changes. Use resume by dispatch ID; never blindly repeat uncertain input. "
+                "df_brief reads self, df_unit reads targets and body parts, df_item reads weapon attacks, df_status is comprehensive. "
+                "df_capabilities reports runtime support. Full traces belong to df_dispatch_details. Raw input is development only.",
             }
         elif method == "ping":
             result = {}
         elif not self.initialized:
             return dict(response, error={"code": -32000, "message": "Initialize the server first"})
         elif method == "tools/list":
-            result = {"tools": TOOLS}
+            result = {"tools": self.tools}
         elif method == "tools/call":
-            definition = next((t for t in TOOLS if t["name"] == params.get("name")), None)
+            definition = next((t for t in self.tools if t["name"] == params.get("name")), None)
             if not definition:
                 return dict(response, error={"code": -32602, "message": "Unknown tool"})
             try:
-                arguments = params.get("arguments", {})
+                arguments = deepcopy(params.get("arguments", {}))
                 validate(arguments, definition["inputSchema"])
                 name = definition["name"]
+                if not self.development:
+                    if name == "df_observe":
+                        arguments["view"] = "concise"
+                    elif name == "df_act":
+                        arguments["result_format"] = "compact"
                 if name == "df_keys":
                     value = self.client.request({"op": "keys", **arguments})
                 else:
                     method_name = {
+                        "df_settings": "settings",
+                        "df_brief": "brief",
+                        "df_actions": "actions",
+                        "df_capabilities": "capabilities",
+                        "df_unit": "unit",
                         "df_status": "status",
+                        "df_navigation": "navigation",
                         "df_game_status": "game_status",
                         "df_character_status": "character_status",
                         "df_observe": "observe",
@@ -360,14 +367,14 @@ class Server:
                         "df_items": "items",
                         "df_item": "item",
                         "df_interrupt": "interrupt",
+                        "df_dispatch_details": "dispatch_details",
                     }[name]
                     value = getattr(self.client, method_name)(**arguments)
                 result = {
                     "content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}],
                     "isError": False,
                 }
-            # A tool boundary must convert every application failure into an MCP result.
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 -- the MCP boundary must return a tool error.
                 error = str(exc)
                 if isinstance(exc, DispatchError):
                     error = json.dumps(
@@ -375,6 +382,9 @@ class Server:
                             "error": error,
                             "dispatch_id": exc.dispatch_id,
                             "resume_action": exc.resume_action,
+                            "code": exc.code,
+                            "input_sent": exc.input_sent,
+                            "details": exc.details,
                         }
                     )
                 result = {"content": [{"type": "text", "text": error}], "isError": True}
@@ -383,9 +393,9 @@ class Server:
         return dict(response, result=result)
 
 
-def serve(client, source=None, target=None):
+def serve(client, source=None, target=None, development=False):
     source, target = source or sys.stdin, target or sys.stdout
-    server = Server(client)
+    server = Server(client, development=development)
     output_lock, running_lock = Lock(), Lock()
     running = {}
 
@@ -395,9 +405,9 @@ def serve(client, source=None, target=None):
                 target.write(json.dumps(response, ensure_ascii=False) + "\n")
                 target.flush()
 
-    def execute(message):
+    def execute(message, original, received_ns):
         try:
-            write(server.handle(message))
+            server.handle(message, original=original, received_ns=received_ns, emit=write)
         finally:
             with running_lock:
                 running.pop(message["id"], None)
@@ -409,6 +419,7 @@ def serve(client, source=None, target=None):
             line = source.readline(1024 * 1024 + 1)
             if not line:
                 return
+            received_ns = time.perf_counter_ns()
             try:
                 if len(line) > 1024 * 1024:
                     while line and not line.endswith("\n"):
@@ -424,7 +435,7 @@ def serve(client, source=None, target=None):
                         if dispatch_id:
                             try:
                                 client.interrupt(dispatch_id)
-                            except Exception as exc:  # noqa: BLE001
+                            except Exception as exc:  # noqa: BLE001 -- notifications cannot receive an error reply.
                                 # Notifications cannot receive a JSON-RPC error
                                 # reply. Report the failure without losing the reader.
                                 print(
@@ -441,14 +452,15 @@ def serve(client, source=None, target=None):
                     and type(message.get("id")) in (str, int)
                     and isinstance(params.get("arguments", {}), dict)
                 ):
+                    original = message
                     message = deepcopy(message)
                     arguments = message["params"].setdefault("arguments", {})
                     dispatch_id = arguments.setdefault("request_id", str(uuid.uuid4()))
                     with running_lock:
                         running[message["id"]] = dispatch_id
-                    workers.submit(execute, message)
+                    workers.submit(execute, message, original, received_ns)
                 else:
-                    write(server.handle(message))
+                    server.handle(message, received_ns=received_ns, emit=write)
             except (ValueError, TypeError) as exc:
                 write(
                     {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": str(exc)}}

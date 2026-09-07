@@ -49,5 +49,4 @@ The harness now exposes full conversation labels, participant IDs, and persisten
 report text. `select_unit` resolves the selected person's current map location
 through the game viewport; `dismiss` handles one help/announcement page. “More”
 and “Okay” were both exercised live, including rejecting movement while a prompt
-was present. The earlier action prompt is tracked separately in
-[DEVELOPMENT.md](DEVELOPMENT.md).
+was present.

@@ -1,18 +1,23 @@
 # Character calculation provenance
 
-`dfharness/character_calculations.lua` reconstructs the currently installed
-game's character calculations in pure Lua. It is loaded only by character
-status. It uses mapped DFHack fields and read-only getters; it never invokes
+`dfharness/character_calculations.lua` contains the remaining movement and need
+models. Capacity, load penalty and burden now live in the standalone DFHack Lua
+helper `dfharness/burden.lua`, shared by status, brief and item receipts. That
+helper uses DFHack's attribute/skill APIs and mapped root inventory caches; it
+has no executable identity or HUD dependency. The source in its results is
+`dfhack_lua_unit_burden`.
+
+The remaining models use mapped DFHack fields and read-only getters; they never invoke
 native movement or weight calculations, refreshes caches, sends inputs,
 advances time, or needs screenshots. The native movement routine itself can
 refresh body/weight caches and optionally train attributes, so calling it from
 status would violate the read-only contract.
 
-The supported build is DF 53.16 Windows Steam (`v0.53.16 win64 STEAM`), PE
+The movement/need models' supported build is DF 53.16 Windows Steam (`v0.53.16 win64 STEAM`), PE
 timestamp `1785767641`, analyzed with DFHack 53.16-r1.1. The installed executable's
 SHA-256 is `205770918fd54c96cbbcf89223ebd449e2e113c7c873ed81177c4511a3450db7`.
 Runtime checks require that version string, Windows, and that PE timestamp.
-Other builds require another audit. The fingerprint does not detect arbitrary
+Other builds leave those models unavailable. The fingerprint does not detect arbitrary
 in-memory patches that retain the same build identity.
 
 The audit read the user's installed executable and matched accesses against
@@ -50,7 +55,8 @@ otherwise: capacity = max(1, trunc(S / 1000) * A)
 capacity_kg = capacity / 100
 ```
 
-Strength follows the native gait-dependent attribute/curse treatment. Physical
+The burden helper obtains effective strength from `dfhack.units.getPhysicalAttrValue`.
+It reports hidden-curse variants as unsupported. Physical
 body size retains native units; it is not assumed to be the old DF size scale.
 
 Inventory calculation reads each native root inventory entry once, using valid
@@ -81,7 +87,7 @@ produce unavailable calculations, never a zero or stale-mass estimate.
 
 ### Burden state
 
-`encumbrance.burden` reports the HUD indicator separately from movement cost.
+`encumbrance.burden` calculates the burden state separately from movement cost.
 Using the same integer comparison weight and capacity, the native HUD chooses:
 
 | Condition | State / label | Native icon |
@@ -92,17 +98,18 @@ Using the same integer comparison weight and capacity, the native HUD chooses:
 
 The reported labels name these icon states; Unburdened means no burden icon.
 Both boundaries use strict greater-than comparisons. The heavy state is distinct
-from the first movement penalty: at the present 63.04 kg capacity, the heavy
-threshold is 94.56 kg. The current rounded comparison weight 98.46 kg selects
-the heavy icon, matching the user's observed overburdened UI. The report returns
-the label, severity, `burdened` and `overburdened` booleans, icon identifier,
-percentage, and kilogram thresholds without reading pixels or requiring a hover.
+from the first movement penalty: a 63.04 kg capacity gives a 94.56 kg heavy
+threshold. The report returns the label, severity, `burdened` and `overburdened`
+booleans, percentage and kilogram thresholds without reading the interface.
 
 Unknown load/capacity leaves the entire burden state unavailable, including its
 booleans. Mounted and hidden-curse HUD capacity variants are explicitly
 unsupported. Speed exemptions are not assumed to suppress the HUD icon: native
 HUD code compares carried mass even when a speed calculation ignores load.
-These are interface conditions, not harness decisions about action risk.
+The helper delegates effective armor skill to DFHack. Its known 846000–863999
+sleep-boundary ambiguity is unavailable when it could affect a worn armor
+discount; an integer result from that port cannot be reliably corrected without
+the pre-division value. Burden never chooses action or interruption policy.
 
 ## Calculated movement
 

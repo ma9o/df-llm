@@ -1,7 +1,23 @@
--- Read-only character sheet. Loaded only for character_status requests.
+--@ module=true
+--luacheck: globals factory
+local function build(...)
+-- Read-only character sheet and the narrow progression sample for receipts.
 -- No input, game mutation, or controller policy is applied by this reader.
 local u, out, helpers = ...
 local array = helpers.array
+local brief=helpers.profile=='brief'
+local progression=helpers.profile=='progress'
+-- Select before evaluating a read, not after traversing a native profile.
+-- Full status has no filter. This profile is deliberately a separate query.
+local brief_fields={identity={english_name=true,age_years=true,profession=true,hist_figure_id=true},
+    health=true,attributes=true,skills=true,inventory=true,encumbrance=true,
+    physiology=true,movement={effective_speed=true},combat=true,soul=true}
+local function requested(path)
+    if not brief then return true end
+    local root,field=path:match('^([^.%[]+)%.?([^.%[]*)')
+    local selection=brief_fields[root]
+    return selection==true or type(selection)=='table' and (field=='' or selection[field]==true)
+end
 local function text(value)
     -- DF vectors of string pointers expose .value, unlike inline strings.
     if type(value)~='string' and value~=nil then value=value.value end
@@ -12,10 +28,11 @@ out.unavailable=array()
 out.truncated=array()
 
 local function unavailable(path, reason)
-    out.unavailable[#out.unavailable+1]={path=path,reason=reason}
+    if requested(path) then out.unavailable[#out.unavailable+1]={path=path,reason=reason} end
 end
 
 local function read(path, fn)
+    if not requested(path) then return end
     local ok,value=pcall(fn)
     if ok and value~=nil then return value end -- Preserve false and zero.
     unavailable(path,ok and 'Not available in this character state' or tostring(value):sub(1,240))
@@ -73,13 +90,63 @@ local function named_reference(kind, id, path)
     return result
 end
 
-local caste=read('identity.caste',function() return dfhack.units.getCasteRaw(u) end)
+local function attributes(source, enum_name, getter, path)
+    local result=array()
+    for id=math.max(0,df[enum_name]._first_item),df[enum_name]._last_item do
+        local attr=source[id]
+        local entry=fields(attr,progression and {'value'} or {'value','max_value','soft_demotion'},path..'['..id..']')
+        entry.id=id;entry.name=label(enum_name,id)
+        if not progression then
+            entry.effective=read(path..'['..id..'].effective',function() return getter(u,id) end)
+        end
+        result[#result+1]=entry
+    end
+    return result
+end
+
+local function skills(soul)
+    return list(soul.skills,300,'skills',function(skill,index)
+        local path='skills['..index..']'
+        local entry=fields(skill,progression and {'id','rating','experience'}
+            or {'id','rating','experience','rusty','natural_skill_lvl'},path)
+        entry.name=label('job_skill',skill.id)
+        entry.rating_name=read(path..'.rating_name',function() return text(df.skill_rating.attrs[skill.rating].caption) end)
+        entry.next_level_xp_threshold=read(path..'.next_level_xp_threshold',function() return df.skill_rating.attrs[skill.rating].xp_threshold end)
+        entry.total_experience=read(path..'.total_experience',function() return dfhack.units.getExperience(u,skill.id,true) end)
+        if not progression then
+            entry.caption=read(path..'.caption',function() return text(df.job_skill.attrs[skill.id].caption) end)
+            entry.effective=read(path..'.effective',function() return dfhack.units.getEffectiveSkill(u,skill.id) end)
+        end
+        return entry
+    end)
+end
+
+if progression then
+    -- Stop before touching inventory, anatomy, needs, history, UI or effective
+    -- attribute/skill calculations. These are stored values and native XP.
+    local soul=read('soul',function() return u.status.current_soul end)
+    local sample={unit_id=u.id,soul_available=soul~=nil,unavailable=out.unavailable,truncated=out.truncated,
+        attributes={physical=read('attributes.physical',function()
+            return attributes(u.body.physical_attrs,'physical_attribute_type',nil,'attributes.physical') end)}}
+    if soul then
+        sample.soul_id=read('soul_id',function() return soul.id end)
+        sample.attributes.mental=read('attributes.mental',function()
+            return attributes(soul.mental_attrs,'mental_attribute_type',nil,'attributes.mental') end)
+        sample.skills=read('skills',function() return skills(soul) end)
+    else
+        unavailable('skills','The character has no readable current soul')
+        unavailable('attributes.mental','The character has no readable current soul')
+    end
+    return sample
+end
+
+local caste=read(brief and 'physiology.caste' or 'identity.caste',function() return dfhack.units.getCasteRaw(u) end)
 out.identity=fields(u,{'hist_figure_id','race','caste','sex','birth_year','birth_time','custom_profession'},'identity')
 out.identity.english_name=read('identity.english_name',function() return translated(u.name) end)
 out.identity.age_years=read('identity.age_years',function() return dfhack.units.getAge(u) end)
-out.identity.sex_label=({[-1]='sexless',[0]='female',[1]='male'})[u.sex] or 'unknown'
+if not brief then out.identity.sex_label=({[-1]='sexless',[0]='female',[1]='male'})[u.sex] or 'unknown' end
 out.identity.race_token=read('identity.race_token',function() return dfhack.units.getRaceName(u) end)
-out.identity.caste_token=caste and text(caste.caste_id) or nil
+if not brief then out.identity.caste_token=caste and text(caste.caste_id) or nil end
 out.identity.profession=read('identity.profession',function() return text(dfhack.units.getProfessionName(u)) end)
 out.identity.profession_id=read('identity.profession_id',function() return dfhack.units.getProfession(u) end)
 out.identity.kill_count=read('identity.kill_count',function() return dfhack.units.getKillCount(u) end)
@@ -131,6 +198,16 @@ end
 
 local function inventory_weights(items)
     for _,item in ipairs(items or {}) do
+        if item.capacity_unavailable then
+            unavailable('inventory['..item.id..'].capacity_volume_raw',item.capacity_unavailable)
+        end
+        if item.contaminants_unavailable then
+            unavailable('inventory['..item.id..'].contaminants',item.contaminants_unavailable)
+        end
+        if item.contaminants_truncated then
+            out.truncated[#out.truncated+1]={path='inventory['..item.id..'].contaminants',
+                total=item.contaminants_total,limit=128}
+        end
         local mass,reason=mass_mg(item.weight_raw,item.weight_computed)
         if mass then item.weight_kg=mass/1000000 else item.weight_unavailable_reason=reason end
         inventory_weights(item.contents)
@@ -138,7 +215,26 @@ local function inventory_weights(items)
 end
 inventory_weights(out.inventory)
 
-for _,item in ipairs(out.inventory or {}) do
+-- A parent can retain its valid flag while a just-filled/melted child is
+-- invalid. Its cached aggregate still drives native HUD load, but cannot prove
+-- physical mass. Validate descendants without refreshing any native cache.
+local function cache_tree(item,budget,seen,depth)
+    if depth>16 then budget.depth_exceeded=true;error('Contained weight scan exceeds depth 16',0) end
+    if budget.remaining<=0 then budget.exceeded=true;error('Contained weight scan exceeds 4096 items',0) end
+    local id=item.id
+    if seen[id] then error('Repeated or cyclic contained item '..tostring(id),0) end
+    seen[id]=true;budget.remaining=budget.remaining-1
+    local mass,reason=mass_mg(item.weight,item.flags.weight_computed)
+    if not mass then error(('Item %s: %s'):format(id,reason or 'Unknown cached mass'),0) end
+    local contents_mass=0
+    for _,child in ipairs(dfhack.items.getContainedItems(item)) do
+        contents_mass=contents_mass+cache_tree(child,budget,seen,depth+1)
+    end
+    if mass<contents_mass then error('Item '..tostring(id)..': cached mass is less than contained mass',0) end
+    return mass
+end
+
+for _,item in ipairs(brief and {} or out.inventory or {}) do
     if item.body_part_id and item.body_part_id>=0 then
         item.body_part_name=read('inventory['..item.id..'].body_part_name',function() return part_name(item.body_part_id) end)
     end
@@ -147,25 +243,32 @@ end
 out.encumbrance=read('encumbrance',function()
     local result={weight_complete=true,inventory_entry_count=#u.inventory,root_item_count=0,weighed_root_item_count=0,
         unweighed_root_item_count=0,heaviest_items=array(),by_mode=array(),unweighed_items=array(),
-        source='Native inventory weight caches; kilograms; container contents included once',
+        source='Native cached mass; totals require valid root and descendant caches, with contents included once',
         heaviest_items_limit=10}
     local total,seen,by_mode,weighted=0,{},{},{}
+    local cached_total,cached_complete=0,true
+    local tree_budget,tree_seen={remaining=4096},{}
     local limit=4096
     if #u.inventory>limit then
-        result.weight_complete=false
+        result.weight_complete=false;cached_complete=false
         out.truncated[#out.truncated+1]={path='encumbrance.inventory_scan',total=#u.inventory,limit=limit}
     end
     for index=0,math.min(#u.inventory,limit)-1 do
-        local ok,entry,mass,reason=pcall(function()
+        local ok,entry,mass,reason,item=pcall(function()
             local inv=u.inventory[index]
             local item=inv.item
             local mg,why=mass_mg(item.weight,item.flags.weight_computed)
             return {id=item.id,description=text(dfhack.items.getReadableDescription(item)),
-                mode=label('inv_item_role_type',inv.mode)},mg,why
+                mode=label('inv_item_role_type',inv.mode)},mg,why,item
         end)
         if not ok then reason=tostring(entry):sub(1,240);entry={inventory_index=index} end
         if not entry.id or not seen[entry.id] then
             if entry.id then seen[entry.id]=true end
+            if ok and mass then
+                cached_total=cached_total+mass
+                local valid,why=pcall(cache_tree,item,tree_budget,tree_seen,0)
+                if not valid then mass=nil;reason=tostring(why):sub(1,240) end
+            else cached_complete=false end
             result.root_item_count=result.root_item_count+1
             local mode=entry.mode or 'unknown'
             local group=by_mode[mode] or {mode=mode,item_count=0,known_mass=0,weight_complete=true}
@@ -183,9 +286,16 @@ out.encumbrance=read('encumbrance',function()
             end
         end
     end
+    if cached_complete then result.native_cached_weight_kg=cached_total/1000000 end
+    if tree_budget.exceeded then
+        out.truncated[#out.truncated+1]={path='encumbrance.contained_weight_scan',limit=4096,scanned=4096}
+    end
+    if tree_budget.depth_exceeded then
+        out.truncated[#out.truncated+1]={path='encumbrance.contained_weight_depth',limit=16}
+    end
     result.known_weight_kg=total/1000000
     if result.weight_complete then result.total_weight_kg=result.known_weight_kg
-    else unavailable('encumbrance.total_weight_kg','Some carried items have unreadable/invalid weight caches, or the inventory scan was bounded') end
+    else unavailable('encumbrance.total_weight_kg','Carried root or descendant weight caches are invalid, inconsistent, unreadable or bounded') end
     for _,group in pairs(by_mode) do
         group.known_weight_kg=group.known_mass/1000000;group.known_mass=nil
         if #u.inventory>limit then group.weight_complete=false end
@@ -201,9 +311,9 @@ out.encumbrance=read('encumbrance',function()
     if result.unweighed_root_item_count>100 then
         out.truncated[#out.truncated+1]={path='encumbrance.unweighed_items',total=result.unweighed_root_item_count,limit=100}
     end
-    if not helpers.calculations then
+    if not helpers.burden then
         for _,name in ipairs({'capacity','load_penalty','burden'}) do
-            result[name]={available=false,reason='Character calculation module was not supplied'}
+            result[name]={available=false,reason='DFHack burden helper was not supplied'}
             unavailable('encumbrance.'..name,result[name].reason)
         end
     end
@@ -273,17 +383,6 @@ out.body.syndromes=read('body.syndromes',function()
     end)
 end)
 
-local function attributes(source, enum_name, getter, path)
-    local result=array()
-    for id=math.max(0,df[enum_name]._first_item),df[enum_name]._last_item do
-        local attr=source[id]
-        local entry=fields(attr,{'value','max_value','soft_demotion'},path..'['..id..']')
-        entry.id=id;entry.name=label(enum_name,id)
-        entry.effective=read(path..'['..id..'].effective',function() return getter(u,id) end)
-        result[#result+1]=entry
-    end
-    return result
-end
 out.attributes=object()
 out.attributes.physical=read('attributes.physical',function()
     return attributes(u.body.physical_attrs,'physical_attribute_type',dfhack.units.getPhysicalAttrValue,'attributes.physical')
@@ -296,19 +395,8 @@ if soul then
     out.attributes.mental=read('attributes.mental',function()
         return attributes(soul.mental_attrs,'mental_attribute_type',dfhack.units.getMentalAttrValue,'attributes.mental')
     end)
-    out.skills=read('skills',function()
-        return list(soul.skills,300,'skills',function(skill,index)
-            local path='skills['..index..']'
-            local entry=fields(skill,{'id','rating','experience','rusty','natural_skill_lvl'},path)
-            entry.name=label('job_skill',skill.id)
-            entry.caption=read(path..'.caption',function() return text(df.job_skill.attrs[skill.id].caption) end)
-            entry.rating_name=read(path..'.rating_name',function() return text(df.skill_rating.attrs[skill.rating].caption) end)
-            entry.next_level_xp_threshold=read(path..'.next_level_xp_threshold',function() return df.skill_rating.attrs[skill.rating].xp_threshold end)
-            entry.effective=read(path..'.effective',function() return dfhack.units.getEffectiveSkill(u,skill.id) end)
-            entry.total_experience=read(path..'.total_experience',function() return dfhack.units.getExperience(u,skill.id,true) end)
-            return entry
-        end)
-    end)
+    out.skills=read('skills',function() return skills(soul) end)
+    if not brief then
     local p=soul.personality
     out.needs.focus=fields(p,{'current_focus','undistracted_focus'},'needs.focus')
     out.needs.psychological=read('needs.psychological',function()
@@ -348,6 +436,7 @@ if soul then
             return entry
         end,true)
     end)
+    end
 else
     for _,path in ipairs({'attributes.mental','skills','needs.focus','needs.psychological','personality'}) do
         unavailable(path,'The adventurer has no current soul')
@@ -412,11 +501,15 @@ out.semantics={source='DFHack character state; read-only',
     stress_category='Native DFHack category: 0 is most stressed, 6 is least in this build',
     body_parts='All named parts; active_status_flags lists true native flags, including damage and treatment',
     physical_needs='Timers are raw counters; physiological requirements vary by creature',
-    encumbrance='Physical carried mass, without skill discounts; valid root caches include contents once. Worn includes containers; Weapon can include held clothing. Unknown weight is not zero',
+    encumbrance='Total cached carried mass requires valid root and descendant caches, without skill discounts. Native cached root load is separate and may be stale after contents change. Unknown weight is not zero',
     units='weight_kg is kilograms (weight_raw.whole + fraction/1000000); body dimensions, wound counters, and gait parameters retain native units'}
 if helpers.details_reader then
     return helpers.details_reader(u,out,{array=array,text=text,read=read,fields=fields,list=list,flags=flags,
         label=label,named_reference=named_reference,unavailable=unavailable,caste=caste,ui=helpers.ui,status=helpers.status,
-        calculations=helpers.calculations})
+        calculations=helpers.calculations,interfaces=helpers.interfaces,next_dawn=helpers.next_dawn,burden=helpers.burden,
+        profile=helpers.profile,requested=requested})
 end
 return out
+
+end
+if dfhack_flags and dfhack_flags.module then factory=build else return build(...) end

@@ -2,11 +2,35 @@ import unittest
 from unittest.mock import patch
 
 from dfharness.client import Client, lua_string
-from dfharness.rpc import DFHackError
+from dfharness.rpc import BridgeError, DFHackError, DispatchError
 from tests.support import Bridge
 
 
 class ClientTests(unittest.TestCase):
+    def test_known_begin_rejection_has_no_bogus_resume_handle(self):
+        c = Client(port=1)
+        error = BridgeError(
+            "Another dispatch is active", details={"dispatch_registered": False}, input_sent=False
+        )
+        with (
+            patch.object(c, "request", side_effect=error),
+            self.assertRaises(DispatchError) as caught,
+        ):
+            c.act({"type": "wait"})
+        self.assertIsNone(caught.exception.resume_action)
+        self.assertIs(caught.exception.input_sent, False)
+
+    def test_dispatch_uses_combined_readiness_and_observation_without_an_extra_read(self):
+        bridge = Bridge(
+            {"status": {}, "effect_id": "before"}, [{"status": {}, "effect_id": "after"}]
+        )
+        c = Client(port=1, execution={"mode": "complete"})
+        with patch.object(c, "request", side_effect=bridge):
+            r = c.act({"type": "wait"})
+        self.assertEqual(r["outcome"], "completed")
+        self.assertFalse(any(call["op"] == "observe" for call in bridge.calls))
+        self.assertTrue(all(call.get("observe") for call in bridge.calls if call["op"] == "poll"))
+
     def test_lua_literals_preserve_newlines_and_delimiter_like_input(self):
         value = '\n]]; error("injected") -- ]=] \u263a'
         literal = lua_string(value)
@@ -48,7 +72,7 @@ class ClientTests(unittest.TestCase):
             result = c.act({"type": "wait"}, request_id="abc")
         self.assertEqual(polls, 3)
         self.assertEqual(len(bridge.inputs), 1)
-        self.assertEqual(result["action"]["action_id"], "abc")
+        self.assertEqual(result["dispatch_id"], "abc")
 
     def test_partial_input_failure_is_reported(self):
         c = Client(port=1)
@@ -59,3 +83,14 @@ class ClientTests(unittest.TestCase):
             self.assertRaisesRegex(DFHackError, "partially executed"),
         ):
             c.wait_ready("abc")
+
+    def test_wait_ready_uses_the_same_bounded_pending_pause(self):
+        c = Client(port=1)
+        with (
+            patch.object(c, "request", side_effect=[{"ready": False}] * 5 + [{"ready": True}]),
+            patch("dfharness.client.time.sleep") as pause,
+        ):
+            self.assertTrue(c.wait_ready("abc")["ready"])
+        self.assertEqual(
+            [call.args[0] for call in pause.call_args_list], [0.05, 0.1, 0.2, 0.25, 0.25]
+        )

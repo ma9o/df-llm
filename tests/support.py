@@ -4,7 +4,16 @@ import json
 from collections import deque
 from copy import deepcopy
 
+from dfharness.client import Client
 from dfharness.rpc import DFHackError
+
+
+class FullClient(Client):
+    """Execution tests inspect the diagnostic contract; receipt tests use Client."""
+
+    def act(self, *args, **kwargs):
+        kwargs.setdefault("result_format", "full")
+        return super().act(*args, **kwargs)
 
 
 class Bridge:
@@ -24,7 +33,10 @@ class Bridge:
         op = request["op"]
         if op == "begin_dispatch":
             key = request["request_id"]
-            signature = json.dumps(request, sort_keys=True)
+            signature = json.dumps(
+                {k: request[k] for k in ("action", "execution", "expect") if k in request},
+                sort_keys=True,
+            )
             if key in self.dispatches:
                 saved = self.dispatches[key]
                 if saved["signature"] != signature:
@@ -34,6 +46,8 @@ class Bridge:
                     "action_id": key,
                     "dispatch": deepcopy(saved.get("dispatch")),
                     "view": deepcopy(self.view),
+                    "receipt_view": deepcopy(saved.get("view")),
+                    "compact": deepcopy(saved.get("compact")),
                 }
             resume = request["action"].get("dispatch_id")
             if resume:
@@ -64,6 +78,7 @@ class Bridge:
             return {
                 "ready": self.view["status"].get("ready_for_input", True),
                 "interrupted": record.get("interrupted", False),
+                **({"view": deepcopy(self.view)} if request.get("observe") else {}),
             }
         if op == "observe":
             return deepcopy(self.view)
@@ -87,10 +102,29 @@ class Bridge:
         if op == "finish_dispatch":
             saved = self.dispatches[request["action_id"]]
             saved.update(
-                workflow=deepcopy(request["workflow"]), dispatch=deepcopy(request["dispatch"])
+                workflow=deepcopy(request["workflow"]),
+                dispatch=deepcopy(request["dispatch"]),
+                view=deepcopy(request.get("view")),
+                compact=deepcopy(request.get("compact")),
             )
             self.active = None
             return {"recorded": True}
+        if op == "dispatch_details":
+            saved = self.dispatches.get(request["dispatch_id"])
+            if not saved:
+                return {"available": False, "reason": "Unknown or expired dispatch"}
+            section = request.get("section", "events")
+            value = {
+                "full": saved.get("view"),
+                "compact": saved.get("compact"),
+                "summary": saved.get("dispatch"),
+            }.get(section, saved.get("dispatch", {}).get(section))
+            return {
+                "available": value is not None,
+                "section": section,
+                "dispatch_id": request["dispatch_id"],
+                "value": deepcopy(value),
+            }
         if op == "interrupt":
             self.dispatches[request["dispatch_id"]]["interrupted"] = True
             return {"interruption_requested": True}

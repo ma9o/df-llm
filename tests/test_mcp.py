@@ -20,6 +20,22 @@ class FakeGame:
         self.calls.append(kwargs)
         return {"status": {"mode": "adventure"}}
 
+    def navigation(self, limit=20):
+        self.calls.append({"navigation_limit": limit})
+        return {"navigation": {"leads": []}}
+
+    def unit(self, **kwargs):
+        self.calls.append({"unit": kwargs})
+        return {"available": True}
+
+    def brief(self):
+        self.calls.append("brief")
+        return {"format": "character_brief"}
+
+    def settings(self, **kwargs):
+        self.calls.append({"settings": kwargs})
+        return kwargs
+
 
 class McpTests(unittest.TestCase):
     def setUp(self):
@@ -43,6 +59,27 @@ class McpTests(unittest.TestCase):
             }
         )
 
+    def test_navigation_reads_with_a_bounded_lead_count(self):
+        result = self.call("df_navigation", {"limit": 5})
+        self.assertFalse(result["result"]["isError"])
+        self.assertEqual(self.game.calls, [{"navigation_limit": 5}])
+        self.assertTrue(self.call("df_navigation", {"limit": 101})["result"]["isError"])
+
+    def test_settings_brief_and_unit_are_exposed_without_raw_lua(self):
+        for name, args in (
+            ("df_settings", {"update": {"execution": {"mode": "complete"}}}),
+            ("df_brief", {}),
+            ("df_unit", {"unit_id": 7896, "view": "full"}),
+        ):
+            self.assertFalse(self.call(name, args)["result"]["isError"])
+        self.assertEqual(len(self.game.calls), 3)
+        for name, args in (
+            ("df_unit", {"unit_id": -1}),
+            ("df_settings", {"update": {"risk": "low"}}),
+        ):
+            self.assertTrue(self.call(name, args)["result"]["isError"])
+        self.assertEqual(len(self.game.calls), 3)
+
     def test_stdio_lifecycle_notifications_and_tool_call(self):
         messages = [
             self.init,
@@ -54,7 +91,7 @@ class McpTests(unittest.TestCase):
         serve(self.game, io.StringIO("\n".join(json.dumps(m) for m in messages)), out)
         replies = [json.loads(line) for line in out.getvalue().splitlines()]
         self.assertEqual([r["id"] for r in replies], [1, 2, 3])
-        self.assertEqual(len(replies[1]["result"]["tools"]), 11)
+        self.assertEqual(len(replies[1]["result"]["tools"]), 17)
         self.assertEqual(self.game.calls, ["status"])
 
     def test_invalid_mutation_arguments_never_reach_the_game(self):
@@ -80,8 +117,15 @@ class McpTests(unittest.TestCase):
         self.assertEqual(len(self.game.calls), 1)
         self.assertEqual(self.call("run_lua", {})["error"]["code"], -32602)
 
+    def test_dawn_rest_is_semantic_and_rejects_a_competing_hour_duration(self):
+        action = {"type": "sleep", "until": "dawn"}
+        self.assertFalse(self.call("df_act", {"action": action})["result"]["isError"])
+        self.assertEqual(self.game.calls[-1]["action"], action)
+        self.assertTrue(self.call("df_act", {"action": dict(action, hours=8)})["result"]["isError"])
+        self.assertEqual(len(self.game.calls), 1)
+
     def test_conversation_actions_preserve_state_guard_and_request_id(self):
-        for action in ({"type": "select_unit", "unit_id": 4232}, {"type": "dismiss"}):
+        for action in ({"type": "talk", "unit_id": 4232}, {"type": "dismiss"}):
             args = {
                 "action": action,
                 "expect": "observed-state",
@@ -89,23 +133,43 @@ class McpTests(unittest.TestCase):
             }
             result = self.call("df_act", args)
             self.assertFalse(result["result"]["isError"])
-            self.assertEqual(self.game.calls[-1], args)
+            self.assertEqual(self.game.calls[-1], dict(args, result_format="compact"))
 
     def test_execution_policy_reaches_dispatch_and_invalid_policies_do_not(self):
         args = {
             "action": {"type": "resume"},
             "execution": {"mode": "complete", "acknowledge": True},
             "timeout": 20,
+            "result_format": "compact",
         }
         self.assertFalse(self.call("df_act", args)["result"]["isError"])
         self.assertEqual(self.game.calls, [args])
-        for policy in ({"mode": "safe"}, {"risk": "low"}, {"max_steps": 65}, {"acknowledge": 1}):
+        for policy in ({"mode": "safe"}, {"risk": "low"}, {"max_steps": 1025}, {"acknowledge": 1}):
             self.assertTrue(
                 self.call("df_act", {"action": {"type": "wait"}, "execution": policy})["result"][
                     "isError"
                 ]
             )
         self.assertEqual(self.game.calls, [args])
+
+    def test_raw_inputs_and_full_ui_require_development_toolset(self):
+        raw = {"action": {"type": "key", "key": "OPTION2"}}
+        self.assertTrue(self.call("df_act", raw)["result"]["isError"])
+        self.assertTrue(self.call("df_observe", {"view": "full"})["result"]["isError"])
+        self.assertEqual(self.call("df_keys", {})["error"]["code"], -32602)
+        self.assertEqual(self.game.calls, [])
+        dev = Server(self.game, development=True)
+        dev.handle(self.init)
+        response = dev.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "df_act", "arguments": raw},
+            }
+        )
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(self.game.calls, [raw])
 
     def test_parse_error_does_not_break_next_request(self):
         out = io.StringIO()
@@ -120,27 +184,22 @@ class McpTests(unittest.TestCase):
                 started, interrupted = Event(), Event()
 
                 class RunningGame(FakeGame):
-                    def __init__(self, started_event, interrupted_event):
-                        super().__init__()
-                        self.started_event = started_event
-                        self.interrupted_event = interrupted_event
-
-                    def act(self, **kwargs):
+                    def act(self, started=started, interrupted=interrupted, **kwargs):
                         self.dispatch_id = kwargs["request_id"]
-                        self.started_event.set()
-                        if not self.interrupted_event.wait(2):
+                        started.set()
+                        if not interrupted.wait(2):
                             raise AssertionError("The stdio reader blocked behind the action")
                         return {"dispatch": {"outcome": "interrupted", "id": self.dispatch_id}}
 
-                    def interrupt(self, dispatch_id):
-                        if not self.started_event.wait(2):
+                    def interrupt(self, dispatch_id, started=started, interrupted=interrupted):
+                        if not started.wait(2):
                             raise AssertionError("Action worker did not start")
                         if dispatch_id != self.dispatch_id:
                             raise AssertionError("Cancellation targeted another dispatch")
-                        self.interrupted_event.set()
+                        interrupted.set()
                         return {"interruption_requested": True}
 
-                game = RunningGame(started, interrupted)
+                game = RunningGame()
                 call = {
                     "jsonrpc": "2.0",
                     "id": 3,

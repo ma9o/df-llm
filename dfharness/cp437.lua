@@ -1,3 +1,6 @@
+--@ module=true
+--luacheck: globals factory
+local function build()
 -- CP437 glyph mapping extracted unchanged from the supplied df-ascii.
 local cp437_unicode = {
     [1] = 0x263A, [2] = 0x263B, [3] = 0x2665, [4] = 0x2666,
@@ -51,3 +54,6 @@ local function code_to_glyph(code)
 end
 
 return code_to_glyph
+
+end
+if dfhack_flags and dfhack_flags.module then factory=build else return build(...) end

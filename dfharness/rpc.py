@@ -8,15 +8,52 @@ No Wine subprocess, protobuf compiler, or third-party package is required.
 import socket
 import struct
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 
 HEADER = struct.Struct("<h2xi")  # The two padding bytes are part of the protocol.
 HANDSHAKE = struct.Struct("<8si")
 MAX_MESSAGE = 64 * 1024 * 1024
+POLL_MIN_SECONDS = 0.05
+POLL_MAX_SECONDS = 0.25
+RPC_DEADLINE = ContextVar("dfharness_rpc_deadline", default=None)
+
+
+@contextmanager
+def rpc_deadline(deadline):
+    """Scope transport waits to one dispatch without changing shared clients."""
+    token = RPC_DEADLINE.set(deadline)
+    try:
+        yield
+    finally:
+        RPC_DEADLINE.reset(token)
+
+
+def response_timeout(default):
+    deadline = RPC_DEADLINE.get()
+    if deadline is None:
+        return default
+    remaining = deadline - time.monotonic()
+    # The engine checks its deadline before input. Final observation/checkpoint
+    # bookkeeping can run afterward, using the ordinary bounded RPC timeout.
+    return remaining if remaining > 0 else default
+
+
+def pending_pause(consecutive, remaining):
+    """Back off repeated readiness reads, bounded by the dispatch deadline."""
+    return max(0.0, min(POLL_MIN_SECONDS * 2 ** min(consecutive, 3), POLL_MAX_SECONDS, remaining))
 
 
 class DFHackError(RuntimeError):
     pass
+
+
+class BridgeError(DFHackError):
+    """A structured bridge rejection, distinct from an uncertain transport failure."""
+
+    def __init__(self, message, code="bridge_error", details=None, input_sent=None):
+        super().__init__(message)
+        self.code, self.details, self.input_sent = code, details or {}, input_sent
 
 
 class DispatchError(DFHackError):
@@ -25,11 +62,12 @@ class DispatchError(DFHackError):
     def __init__(self, dispatch_id, cause):
         self.dispatch_id = dispatch_id
         self.resume_action = {"type": "resume", "dispatch_id": dispatch_id}
-        super().__init__(
-            f"{cause}\nDispatch ID: {dispatch_id}. No input was retried. "
-            "Observe/status before continuing; resume this ID if its checkpoint exists, "
-            "or interrupt it before choosing a different action."
-        )
+        self.code = getattr(cause, "code", "execution_uncertain")
+        self.details = getattr(cause, "details", {})
+        if self.details.get("dispatch_registered") is False:
+            self.resume_action = None
+        self.input_sent = getattr(cause, "input_sent", None)
+        super().__init__(str(cause))
 
 
 class CommandError(DFHackError):

@@ -25,7 +25,7 @@ jobs:
       - run: uv run --locked ruff format --check dfharness tests dfctl dfhack-run
       - run: uv run --locked ty check
       - run: uv run --locked vulture
-      - run: uv run --locked python -m unittest discover -v
+      - run: uv run --locked python -m tests.run
       - run: uv build
 
   lua:

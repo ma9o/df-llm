@@ -41,7 +41,7 @@ local function fixture()
         status2=zeros{},syndromes={active=vector({syndrome})},enemy={gait_index=gaits},
         actions=vector({{id=12,type=0}}),
         inventory=vector({}),
-        status={command_gait_index=gaits,current_soul={mental_attrs=mental,
+        status={command_gait_index=gaits,current_soul={id=12,mental_attrs=mental,
             skills=vector({{id=df.job_skill.HAMMER,rating=1,experience=5,rusty=1,natural_skill_lvl=0}}),
             personality={current_focus=75,undistracted_focus=100,stress=500,longterm_stress=0,combat_hardened=0,
                 traits=traits,values=vector({{type=0,strength=7}}),
@@ -73,13 +73,14 @@ local fake_units={
     isGoalAchieved=function() return false end,
 }
 local environment=setmetatable({df=fake_df,dfhack={units=fake_units,
-    items={getReadableDescription=function(item) return item.description end},
+    items={getReadableDescription=function(item) return item.description end,
+        getContainedItems=function(item)return item.contents or {}end},
     translation={translateName=function(name) return name end}}},{__index=_G})
 local reader=assert(load(reader_source,'character fixture','t',environment))
-local function run(unit, sheet, ui, status)
+local function run(unit, sheet, ui, status, profile)
     return reader(unit,sheet or {id=7,name='Fixture',inventory={{id=20,body_part_id=0}}},
         {array=function() return require('json.internal'):newArray{} end,text=function(s) return s or '' end,
-         ui=ui,status=status})
+         ui=ui,status=status,profile=profile})
 end
 
 local results={}
@@ -146,6 +147,7 @@ local function close(a,b) assert(math.abs(a-b)<0.0000001,tostring(a)..' ~= '..b)
 test('container_contents_and_stacks_are_counted_once',function()
     local u=fixture()
     u.inventory=vector({carried(20,17,511750),carried(21,3,572000,'Weapon')})
+    u.inventory[0].item.contents={carried(22,5,0).item}
     local r=run(u,{inventory={{id=20,weight_raw={whole=17,fraction=511750},weight_computed=true,
         contents={{id=22,stack_size=5,weight_raw={whole=5,fraction=0},weight_computed=true}}}}})
     local e=r.encumbrance
@@ -156,6 +158,51 @@ test('container_contents_and_stacks_are_counted_once',function()
     close(e.by_mode[1].weight_kg+e.by_mode[2].weight_kg,e.total_weight_kg)
     assert(e.capacity.available==false and e.load_penalty.available==false)
     assert(has_unavailable(r,'encumbrance.capacity') and has_unavailable(r,'encumbrance.load_penalty'))
+end)
+test('valid_root_with_invalid_descendant_cannot_claim_complete_physical_mass',function()
+    local u=fixture()
+    local pack,skin,water=carried(20,17,511750),carried(22,2,156000),carried(23,1,656000,'Worn',false)
+    pack.item.contents={skin.item};skin.item.contents={water.item}
+    u.inventory=vector({pack,carried(21,3,572000,'Weapon')})
+    local r=run(u);local e=r.encumbrance
+    assert(not e.weight_complete and not e.total_weight_kg and e.weighed_root_item_count==1)
+    close(e.known_weight_kg,3.572);close(e.native_cached_weight_kg,21.08375)
+    assert(e.unweighed_items[1].id==20 and e.unweighed_items[1].reason:find('Item 23',1,true))
+    assert(has_unavailable(r,'encumbrance.total_weight_kg'))
+    assert(pack.item.flags.weight_computed and not water.item.flags.weight_computed)
+    water.item.flags.weight_computed=true
+    e=run(u).encumbrance;assert(e.weight_complete);close(e.total_weight_kg,21.08375)
+end)
+test('container_mass_below_its_valid_contents_is_inconsistent',function()
+    local u=fixture();local pack=carried(20,1,0)
+    pack.item.contents={carried(21,2,0).item};u.inventory=vector({pack})
+    local e=run(u).encumbrance
+    assert(not e.weight_complete and e.known_weight_kg==0 and e.native_cached_weight_kg==1)
+    assert(e.unweighed_items[1].reason:find('less than contained mass',1,true))
+end)
+test('contained_weight_reads_reject_cycles_and_bound_depth_without_native_writes',function()
+    local u=fixture();local pack=carried(20,1,0)
+    pack.item.contents={pack.item};u.inventory=vector({pack})
+    local r=run(u);assert(not r.encumbrance.weight_complete)
+    assert(r.encumbrance.unweighed_items[1].reason:find('cyclic',1,true))
+    local leaf=pack.item
+    for id=21,37 do local child=carried(id,1,0).item;leaf.contents={child};leaf=child end
+    r=run(u);assert(not r.encumbrance.weight_complete)
+    assert(has_unavailable(r,'encumbrance.total_weight_kg'))
+    local found=false
+    for _,entry in ipairs(r.truncated)do if entry.path=='encumbrance.contained_weight_depth' then found=true;assert(entry.limit==16) end end
+    assert(found)
+end)
+test('contained_weight_scan_shares_one_node_budget_across_roots',function()
+    local u=fixture();local pack=carried(20,5000,0);pack.item.contents={}
+    for id=21,4116 do pack.item.contents[#pack.item.contents+1]=carried(id,1,0).item end
+    u.inventory=vector({pack,carried(5000,2,0,'Weapon')})
+    local r=run(u);local e=r.encumbrance
+    assert(not e.weight_complete and e.native_cached_weight_kg==5002)
+    assert(e.unweighed_root_item_count==2)
+    local found=false
+    for _,entry in ipairs(r.truncated)do if entry.path=='encumbrance.contained_weight_scan' then found=true;assert(entry.limit==4096 and entry.scanned==4096) end end
+    assert(found)
 end)
 test('invalid_cache_is_unknown_not_zero_or_stale_mass',function()
     local u=fixture()
@@ -234,5 +281,49 @@ test('hidden_or_unrecognized_hud_does_not_produce_a_speed',function()
         local r=run(fixture(),nil,case[1],case[2])
         assert(r.movement.displayed_speed==nil and has_unavailable(r,'movement.displayed_speed'))
     end
+end)
+test('brief_skips_unrequested_native_anatomy_personality_activity_and_ascii',function()
+    local u=fixture();local touches=0
+    local unread=setmetatable({},{__index=function() touches=touches+1;error('Unrequested native field') end,
+        __len=function() touches=touches+1;error('Unrequested native vector') end})
+    u.military=unread;u.syndromes=unread;u.actions=unread
+    u.body.body_plan.body_parts=unread;u.body.components=unread
+    u.status.current_soul.personality=unread
+    local r=run(u,nil,unread,nil,'brief')
+    assert(touches==0 and r.health.wounds==1 and r.health.flags.on_ground==false)
+    assert(r.skills[1].effective==0 and r.attributes.physical[1].value==1100)
+    assert(r.body.parts==nil and r.activity==nil and r.personality==nil)
+    assert(r.movement.displayed_speed==nil and not has_unavailable(r,'movement.displayed_speed'))
+    assert(has_unavailable(r,'movement.effective_speed'))
+end)
+test('brief_reports_missing_requested_fields_without_omitted_section_failures',function()
+    local u=fixture();u.body.blood_count=nil;u.status.current_soul=nil
+    local r=run(u,nil,nil,nil,'brief')
+    assert(r.health.blood_count==nil and has_unavailable(r,'health.blood_count'))
+    assert(has_unavailable(r,'skills') and has_unavailable(r,'attributes.mental'))
+    assert(not has_unavailable(r,'personality') and not has_unavailable(r,'needs.focus'))
+end)
+test('progression_reuses_native_xp_without_reading_other_character_profiles',function()
+    local u=fixture();local touches=0
+    local unread=setmetatable({},{__index=function() touches=touches+1;error('Unrequested field') end,
+        __len=function() touches=touches+1;error('Unrequested vector') end})
+    u.inventory=unread;u.counters=unread;u.counters2=unread;u.military=unread
+    u.syndromes=unread;u.actions=unread;u.body.wounds=unread;u.body.body_plan=unread
+    u.status.current_soul.personality=unread
+    local r=run(u,{},unread,nil,'progress')
+    assert(touches==0 and r.unit_id==7 and r.soul_id==12 and #r.unavailable==0)
+    assert(r.skills[1].total_experience==505 and r.skills[1].experience==5)
+    assert(r.attributes.physical[1].value==1100 and r.attributes.mental[1].value==1000)
+    assert(r.skills[1].effective==nil and r.attributes.physical[1].effective==nil)
+    assert(r.inventory==nil and r.health==nil and r.identity==nil)
+end)
+test('progression_preserves_missing_soul_failed_reads_and_zero_values',function()
+    local u=fixture();u.body.physical_attrs[0].value=0;u.status.current_soul=nil
+    local r=run(u,{},nil,nil,'progress')
+    assert(r.soul_available==false and r.skills==nil and has_unavailable(r,'skills'))
+    assert(r.attributes.physical[1].value==0)
+    u=fixture();u.body.physical_attrs[0].value=nil;u.status.current_soul.skills[0].experience=nil
+    r=run(u,{},nil,nil,'progress')
+    assert(has_unavailable(r,'attributes.physical[0].value') and has_unavailable(r,'skills[0].experience'))
 end)
 return {passed=#results,tests=results}

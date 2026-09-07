@@ -1,5 +1,5 @@
 -- Pure fixtures in DFHack Lua. No native unit, menu, clock, or inventory writes.
-local source=...
+local source,burden_source=...
 local version='v0.53.16 win64 STEAM'
 local function flags(values) return setmetatable(values or {},{__index=function() return false end}) end
 local function vector(values)
@@ -14,8 +14,11 @@ local fake_dfhack={getDFVersion=function() return version end,getOSType=function
         getNominalSkill=function(u,id) return u.skills[id] or 0 end,
         getMiscTrait=function(u,_,create) assert(create==false);return u.blood_trait end,
         isHidingCurse=function(u) return u.hiding_curse or false end,
+        getPhysicalAttrValue=function(u,id)return u.body.physical_attrs[id].value end,
+        getEffectiveSkill=function(u,id)return u.skills[id] or 0 end,
     }}
 local model=assert(load(source,'character calculations fixture','t',setmetatable({df=fake_df,dfhack=fake_dfhack},{__index=_G})))()
+local burden=assert(load(burden_source,'burden integration fixture','t',setmetatable({df=fake_df,dfhack=fake_dfhack},{__index=_G})))()
 local function fixture()
     local gaits,indices={},{}
     for id,speed in ipairs({900,1000,5341,2990,6561}) do
@@ -33,17 +36,21 @@ local function fixture()
         status2={liquid_depth=0,liquid_type={whole=0},limbs_stand_count=2,limbs_stand_max=2,limbs_fly_count=0,limbs_fly_max=0},
         relationship_ids={[df.unit_relationship_type.Draggee]=-1},inventory=vector({})}
 end
+local next_item_id=0
 local function carried(whole,fraction,mode,armor,computed)
-    return {mode=df.inv_item_role_type[mode or 'Weapon'],item={weight={whole=whole,fraction=fraction},
+    next_item_id=next_item_id+1
+    return {mode=df.inv_item_role_type[mode or 'Weapon'],item={id=next_item_id,weight={whole=whole,fraction=fraction},
         flags={weight_computed=computed~=false},isArmor=function() return armor==true end}}
 end
 local function run(u,creature_flags)
     local out={physiology={effective_creature_flags=flags(creature_flags)},encumbrance={},movement={},semantics={},unavailable={}}
-    model.apply(u,out,{text=function(v) return v end,caste={flags=flags(creature_flags)},read=function(path,fn)
+    local helpers={text=function(v) return v end,caste={flags=flags(creature_flags)},read=function(path,fn)
         local ok,value=pcall(fn)
         if ok then return value end
         out.unavailable[#out.unavailable+1]={path=path,reason=tostring(value)}
-    end})
+    end,unavailable=function(path,reason)out.unavailable[#out.unavailable+1]={path=path,reason=reason}end}
+    burden.apply(u,out,helpers)
+    model.apply(u,out,helpers)
     return out
 end
 local result={}
@@ -71,15 +78,15 @@ test('zero_needs_exemptions_and_missing_requirements_are_distinct',function()
     assert(not pcall(model.need,'sleep',0,nil))
     assert(not pcall(model.need,'sleep',nil,true))
 end)
-test('wrong_version_or_executable_fails_closed',function()
+test('legacy_speed_build_gate_does_not_gate_the_burden_helper',function()
     assert(model.supported(version,'windows',1785767641))
     assert(not model.supported(version,'linux',1785767641))
     assert(not model.supported(version,'windows',1785767642))
     version='v0.53.17 win64 STEAM'
     local r=run(fixture())
-    assert(not r.encumbrance.capacity.available and not r.encumbrance.load_penalty.available)
-    assert(not r.encumbrance.burden.available)
-    assert(not r.movement.effective_speed.available and not r.physiology.interpreted_needs.available and #r.unavailable==5)
+    assert(r.encumbrance.capacity.available and r.encumbrance.load_penalty.available)
+    assert(r.encumbrance.burden.available)
+    assert(not r.movement.effective_speed.available and not r.physiology.interpreted_needs.available and #r.unavailable==2)
     version='v0.53.16 win64 STEAM'
 end)
 test('live_load_regression_matches_native_hud_and_unloaded_counterfactual',function()
@@ -92,12 +99,6 @@ test('live_load_regression_matches_native_hud_and_unloaded_counterfactual',funct
     close(r.encumbrance.load_penalty.speed_reduction_percent,52.896844088554)
     assert(r.encumbrance.burden.label=='Overburdened' and r.encumbrance.burden.overburdened)
     close(r.encumbrance.burden.thresholds.overburdened_above_kg,94.56)
-end)
-test('capacity_uses_the_native_large_body_branch_and_minimum',function()
-    close(model.capacity(300999,1100).weight_kg,3300)
-    close(model.capacity(299999,1100).weight_kg,3299.98)
-    close(model.capacity(0,0).weight_kg,0.01)
-    assert(not pcall(model.capacity,2147483647,2147483647))
 end)
 test('native_load_quantization_and_first_penalty',function()
     local u=fixture()
@@ -141,12 +142,13 @@ test('modal_or_absent_ascii_is_not_a_calculation_dependency',function()
 end)
 test('native_need_effects_use_864000_for_the_last_sleep_stage',function()
     local u=fixture();u.skills[df.job_skill.ARMOR]=20
+    local skill_state={counters=u.counters,counters2=u.counters2,vision=true,mood=-1}
     u.counters2.sleepiness_timer=846000
-    local r=run(u);assert(r.encumbrance.load_penalty.armor_skill_effective==10 and speed(r).movement_cost==1000)
+    local r=run(u);assert(model.skill(20,skill_state)==10 and speed(r).movement_cost==1000)
     u.counters2.sleepiness_timer=864000
-    r=run(u);assert(r.encumbrance.load_penalty.armor_skill_effective==5 and speed(r).movement_cost==1100)
+    r=run(u);assert(model.skill(20,skill_state)==5 and speed(r).movement_cost==1100)
     u.counters2.sleepiness_timer=0;u.counters2.hunger_timer=2592000;u.counters2.thirst_timer=345600
-    r=run(u);assert(r.encumbrance.load_penalty.armor_skill_effective==5 and speed(r).movement_cost==1300)
+    r=run(u);assert(model.skill(20,skill_state)==5 and speed(r).movement_cost==1300)
 end)
 test('health_penalties_martial_trance_and_load_comparison_are_separate',function()
     local u=fixture();u.counters.nausea=1;u.counters.pain=100;u.counters2.exhaustion=6000
@@ -200,10 +202,10 @@ test('native_clamp_and_ignored_load_have_zero_false_slowdown',function()
 end)
 test('unsupported_mounted_vision_and_stale_body_states_are_explicit',function()
     local u=fixture();u.flags1.rider=true
-    local r=run(u);assert(r.encumbrance.capacity.available and not r.movement.effective_speed.available)
+    local r=run(u);assert(not r.encumbrance.capacity.available and not r.movement.effective_speed.available)
     assert(not r.encumbrance.burden.available)
     u.flags1.rider=false;u.flags2.vision_good=false
-    r=run(u);assert(not r.encumbrance.load_penalty.available and not r.movement.effective_speed.available)
+    r=run(u);assert(r.encumbrance.load_penalty.available and not r.movement.effective_speed.available)
     u.flags2.calculated_bodyparts=false
     r=run(u);assert(not r.encumbrance.capacity.available and r.physiology.interpreted_needs.available)
 end)
@@ -212,19 +214,6 @@ test('native_overflow_and_missing_required_fields_are_not_estimates',function()
     assert(not run(u).movement.effective_speed.available)
     u=fixture();u.counters2.sleepiness_timer=nil
     local r=run(u);assert(not r.physiology.interpreted_needs.available and not r.movement.effective_speed.available)
-end)
-test('burden_icons_use_strict_native_integer_thresholds_including_odd_capacity',function()
-    local r=model.burden(0,6304)
-    assert(r.label=='Unburdened' and r.burdened==false and r.overburdened==false and r.native_icon==nil)
-    assert(model.burden(6304,6304).state=='unburdened')
-    assert(model.burden(6305,6304).label=='Burdened')
-    assert(model.burden(9456,6304).state=='burdened')
-    r=model.burden(9457,6304)
-    assert(r.state=='overburdened' and r.native_icon=='ADVENTURE_BURDEN_HEAVY')
-    assert(model.burden(9001,6001).state=='burdened')
-    assert(model.burden(9002,6001).state=='overburdened')
-    assert(not pcall(model.burden,nil,6304))
-    assert(not pcall(model.burden,0,0))
 end)
 test('burden_uses_armor_discounts_and_does_not_invent_exemptions_from_speed_flags',function()
     local u=fixture();u.inventory=vector({carried(98,462250,'Worn',true)})

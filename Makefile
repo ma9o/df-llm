@@ -30,7 +30,7 @@ shell-check:
 	shellcheck df-ascii
 
 test:
-	uv run --locked python -m unittest discover -v
+	uv run --locked python -m tests.run
 
 build:
 	uv build

@@ -1,13 +1,15 @@
 [project]
 name = "df-llm"
-version = "0.6.1"
+version = "0.23.0"
 description = "Supervised LLM play of Dwarf Fortress through DFHack"
 readme = "README.md"
 authors = [
     { name = "ma9o" },
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "tiktoken>=0.12,<1",
+]
 
 [project.scripts]
 dfctl = "dfharness.cli:main"

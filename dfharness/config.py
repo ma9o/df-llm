@@ -123,6 +123,24 @@ def launch(direct=False):
     }
 
 
+def discover_saves(roots):
+    records = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for folder in root.iterdir():
+            if not folder.is_dir() or folder.name == "current":
+                continue
+            markers = [name for name in ("world.sav", "world.dat") if (folder / name).is_file()]
+            if markers:
+                records[str(folder.resolve())] = {
+                    "name": folder.name,
+                    "path": str(folder.resolve()),
+                    "markers": markers,
+                }
+    return sorted(records.values(), key=lambda r: (r["name"], r["path"]))
+
+
 def doctor(explicit_port=None):
     path = game_path()
     port = port_for_game(explicit_port)
@@ -142,9 +160,8 @@ def doctor(explicit_port=None):
                 (drive / "users").glob("*/AppData/Roaming/Bay 12 Games/Dwarf Fortress/save")
             )
         result["save_roots"] = [str(root) for root in save_roots if root.is_dir()]
-        result["saves"] = sorted(
-            {p.name for root in save_roots for p in root.glob("region*") if p.is_dir()}
-        )
+        result["save_records"] = discover_saves(save_roots)
+        result["saves"] = sorted({r["name"] for r in result["save_records"]})
     if not result["connection"]["dfhack"]:
         result["next"] = "./dfctl setup --port 5001; ./dfctl launch; ./dfctl status"
     return result

@@ -4,11 +4,11 @@ from copy import deepcopy
 from typing import Any
 from unittest.mock import patch
 
-from dfharness.client import Client
 from dfharness.rpc import DFHackError, DispatchError
 from dfharness.state import compact_result
 from dfharness.workflows import next_walk
 from tests.support import Bridge
+from tests.support import FullClient as Client
 
 
 def item(item_id, mode=None, *, ground=False, container=None, x=1):
@@ -85,12 +85,115 @@ def scene(name, carried=(), ground=(), *, choices=None, x=1, blood=1000, reports
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_large_controller_budget_keeps_completion_limits_and_injury_checks(self):
+        def walking_scene(x, *, blood=1000):
+            value = scene(str(x), x=x, blood=blood)
+            value["map"]["walkable"] = ["1" * 75] * 3
+            value["map"]["liquid_depths"] = ["0" * 75] * 3
+            return value
+
+        action = {"type": "walk_to", "x": 71, "y": 1, "z": 0}
+        for budget, injured, expected, inputs in (
+            (70, False, "completed", 70),
+            (65, False, "limit_reached", 65),
+            (70, True, "interrupted", 65),
+        ):
+            with self.subTest(budget=budget, injured=injured):
+                b = Bridge(
+                    walking_scene(1),
+                    [
+                        walking_scene(x, blood=900 if injured and x >= 66 else 1000)
+                        for x in range(2, 72)
+                    ],
+                )
+                receipt = self.client(b).act(
+                    action, execution={"max_steps": budget, "interrupt_on": {"blood_loss": True}}
+                )
+                self.assertEqual(receipt["dispatch"]["outcome"], expected)
+                self.assertEqual(len(b.inputs), inputs)
+                if expected == "limit_reached":
+                    resumed = self.client(b).act(receipt["dispatch"]["resume_action"])
+                    self.assertEqual(resumed["dispatch"]["outcome"], "completed")
+                    self.assertEqual(len(b.inputs), 70)
+
+    def test_pickup_reports_fresh_native_grasp_refusal_without_choosing_equipment(self):
+        held = [item(8, "Weapon"), item(9, "Hauled")]
+        ground = [item(2, ground=True)]
+        for cursor in (10, 11):
+            with self.subTest(report_cursor=cursor):
+                offered = scene(
+                    "menu", held, ground, choices=menu("ENVIRONMENT_PICK_UP_GROUND_ITEM", [2])
+                )
+                offered["report_cursor"] = cursor
+                refusal = {"id": 11, "type": "NO_GRASP_FOR_PICKUP", "text": "No free grasp."}
+                b = Bridge(
+                    scene("before", held, ground),
+                    [offered, scene("refused", held, ground, reports=[refusal])],
+                )
+                d = self.client(b).act({"type": "pickup", "item_id": 2})["dispatch"]
+                self.assertEqual(d["outcome"], "needs_input")
+                self.assertEqual([i["type"] for i in b.inputs], ["key", "select_option"])
+                if cursor == 10:
+                    self.assertEqual(d["details"]["blocker_kind"], "native_refusal")
+                    self.assertEqual(
+                        d["details"]["facts"],
+                        {
+                            "item_id": 2,
+                            "native_refusal": "NO_GRASP_FOR_PICKUP",
+                            "report_id": 11,
+                            "held_item_ids": [8, 9],
+                        },
+                    )
+                else:
+                    self.assertNotEqual(d.get("details", {}).get("blocker_kind"), "native_refusal")
+
+    def test_walking_retains_its_destination_across_a_local_map_rebase(self):
+        before, middle, done = scene("before"), scene("middle"), scene("done", x=2)
+        before["status"]["map_origin"] = {"x": 100, "y": 100, "z": 0}
+        middle["status"]["map_origin"] = done["status"]["map_origin"] = {"x": 101, "y": 100, "z": 0}
+        b = Bridge(before, [middle, done])
+        c = Client(port=1, execution={"mode": "complete"})
+        with patch.object(c, "request", side_effect=b):
+            r = c.act({"type": "walk_to", "x": 3, "y": 1, "z": 0})
+        self.assertEqual(r["dispatch"]["outcome"], "completed")
+        self.assertEqual(len(b.inputs), 2)
+        polls = [p for p in b.calls if p["op"] == "poll" and "route_target" in p]
+        self.assertEqual(polls[-1]["route_target"], {"absolute": {"x": 103, "y": 101, "z": 0}})
+
+    def test_unit_on_another_z_level_does_not_block_the_local_route(self):
+        v = scene("before", units=[{"id": 2, "position": {"x": 2, "y": 1, "z": 1}}])
+        r = next_walk(v, {"x": 2, "y": 1, "z": 0}, {})
+        self.assertEqual(r["pending"]["destination"], {"x": 2, "y": 1, "z": 0})
+
     def client(self, bridge, execution=None):
         c = Client(port=1, execution=execution or {"mode": "complete", "acknowledge": True})
         patcher = patch.object(c, "request", side_effect=bridge)
         patcher.start()
         self.addCleanup(patcher.stop)
         return c
+
+    def test_displacement_replans_with_constraints_but_no_movement_is_not_retried(self):
+        action = {
+            "type": "walk_to",
+            "x": 4,
+            "y": 1,
+            "z": 0,
+            "blocked_tiles": [{"x": 2, "y": 1, "z": 0}],
+        }
+        displaced = scene("pushed", x=1)
+        displaced["status"]["position"]["y"] = 0
+        at_two = scene("two", x=2)
+        at_two["status"]["position"]["y"] = 0
+        b = Bridge(scene("before"), [displaced, at_two, scene("three", x=3), scene("done", x=4)])
+        r = self.client(b).act(action)
+        self.assertEqual(r["dispatch"]["outcome"], "completed")
+        self.assertEqual(b.inputs[1], {"type": "move", "direction": "e"})
+        stopped = Bridge(scene("before"), [scene("unchanged")])
+        c = self.client(stopped)
+        r = c.act(action)
+        self.assertEqual(r["dispatch"]["outcome"], "no_effect")
+        self.assertEqual(c.act(r["dispatch"]["resume_action"])["dispatch"]["outcome"], "no_effect")
+        self.assertEqual(len(stopped.inputs), 1)
 
     def test_pickup_approaches_scrolls_and_selects_by_id_among_identical_labels(self):
         ground = [item(2, ground=True, x=2), item(3, ground=True, x=2)]
@@ -109,7 +212,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(r["dispatch"]["outcome"], "completed")
         self.assertEqual([a["type"] for a in b.inputs], ["move", "key", "key", "select_option"])
         self.assertEqual(b.inputs[-1]["option_id"], "option:ENVIRONMENT_PICK_UP_GROUND_ITEM:1:2")
-        self.assertEqual(r["changes"]["inventory_added"][0]["id"], 2)
+        self.assertEqual(r["adventurer"]["inventory"][0]["id"], 2)
 
     def test_step_resume_continues_without_reopening_or_repeating_input(self):
         b = Bridge(
@@ -345,7 +448,7 @@ class WorkflowTests(unittest.TestCase):
         r = c.act({"type": "resume", "dispatch_id": "original"})
         self.assertEqual(r["dispatch"]["outcome"], "completed")
         self.assertEqual(len(b.inputs), 2)
-        self.assertEqual(r["dispatch"]["steps"], [])
+        self.assertEqual(len(r["dispatch"]["steps"]), 0)
 
     def test_step_limit_keeps_next_action_and_continuation(self):
         b = Bridge(
@@ -371,8 +474,8 @@ class WorkflowTests(unittest.TestCase):
         target = {"x": 2, "y": 1, "z": 0}
         blocked = next_walk(v, target, {})
         self.assertEqual(blocked["outcome"], "needs_input")
-        self.assertEqual(blocked["details"]["route_exclusions"], ["occupied"])
-        self.assertEqual(blocked["details"]["blockers"][0]["id"], 20)
+        self.assertEqual(blocked["details"]["facts"]["exclusions"], ["occupied"])
+        self.assertEqual(blocked["details"]["facts"]["occupants"][0]["id"], 20)
         self.assertIn("input", next_walk(v, target, {"allow_occupied": True}))
         v["map"]["units"] = []
         v["map"]["liquid_depths"][1] = "00700"
@@ -405,7 +508,7 @@ class WorkflowTests(unittest.TestCase):
         initial["ui"]["rows"] = [{"text": "x" * 40000, "y": 1}]
         b = Bridge(initial)
         c = self.client(b)
-        compact = c.act({"type": "pickup", "item_id": 2})
+        compact = c.act({"type": "pickup", "item_id": 2}, result_format="compact")
         full = c.act({"type": "pickup", "item_id": 2}, result_format="full")
         self.assertNotIn("map", compact)
         self.assertNotIn("ui", compact)
@@ -426,10 +529,8 @@ class WorkflowTests(unittest.TestCase):
         v = scene("same")
         v["dispatch"] = {"prompts": [a, b, deepcopy(a)], "outcome": "completed"}
         compact = compact_result(v, v)
-        self.assertEqual(compact["dispatch"]["prompt_sequence"], [0, 1, 0])
-        self.assertEqual(len(compact["dispatch"]["prompts"]), 2)
-        self.assertEqual(compact["dispatch"]["prompts"][0]["text"], ["Inventory help"])
-        self.assertNotIn("text", compact["dispatch"]["prompts"][0]["modal"])
+        self.assertEqual(compact["omitted"]["prompts"], {"help": 2, "announcement": 1})
+        self.assertNotIn("Inventory help", json.dumps(compact))
         self.assertIn("text", v["dispatch"]["prompts"][0]["modal"])
 
     def test_compact_exposes_creature_changes_for_controller_threat_assessment(self):
@@ -438,11 +539,15 @@ class WorkflowTests(unittest.TestCase):
         arrived = {"id": 21, "name": "Creature B", "position": {"x": 0, "y": 1, "z": 0}}
         b = Bridge(scene("before", units=[old]), [scene("after", units=[moved, arrived])])
         r = self.client(b).act(
-            {"type": "wait"}, execution={"interrupt_on": {"new_visible_units": True}}
+            {"type": "wait"},
+            execution={"interrupt_on": {"new_visible_units": True}},
+            result_format="compact",
         )
-        self.assertEqual(r["changes"]["visible_units_added"], [arrived])
-        self.assertEqual(r["changes"]["visible_units_changed"], [{"before": old, "after": moved}])
-        self.assertEqual(r["dispatch"]["outcome"], "interrupted")
+        self.assertEqual(r["changes"]["units"]["appeared"], [arrived])
+        self.assertEqual(
+            r["changes"]["units"]["moved"], [{"id": 20, "position": moved["position"]}]
+        )
+        self.assertEqual(r["outcome"], "interrupted")
 
     def test_stow_selection_closing_the_menu_returns_unverified_postcondition(self):
         carried = [item(2, "Weapon"), item(99, "Worn")]

@@ -1,3 +1,6 @@
+--@ module=true
+--luacheck: globals factory
+local function build()
 -- Read-only DF 53.16 Windows calculations, reconstructed from the installed
 -- executable. See docs/character-calculations.md for provenance and limits.
 -- No native movement/weight calculation is called: those can mutate caches,
@@ -45,64 +48,25 @@ function M.need(kind,counter,required)
     return result
 end
 
-function M.capacity(size,strength)
-    integer(size,0,2147483647);integer(strength,0,2147483647)
-    -- Preserve DF's large-creature branch and signed integer division order.
-    local free=size>=300000 and mul(trunc(size/1000),strength) or trunc(mul(size,strength)/1000)
-    free=max(1,free)
-    return {available=true,weight_kg=free/100,native_capacity=free,size_cur=size,strength=strength,
-        meaning='No movement penalty up to this skill-adjusted load; not a hard inventory limit',
-        load_quantization_kg=0.01}
-end
-
-function M.load(items,skill,capacity,ignored)
-    integer(skill,0,2147483647)
-    local whole,fraction,discounted=0,0,0
-    for _,item in ipairs(items) do
-        assert(item.computed==true,'An inventory weight cache is invalid; status will not refresh it')
-        local w=integer(item.whole,0,2147483647)
-        local f=integer(item.fraction,0,999999)
-        if item.armor and (item.mode=='Worn' or item.mode=='WrappedAround') and skill>1 then
-            local factor=max(0,15-skill)
-            -- Native mass parts are discounted separately, *then* added.
-            w=floor(mul(w,factor)/16);f=floor(mul(f,factor)/16)
-            discounted=discounted+1
+function M.brief_needs(u)
+    local ok,result=pcall(function()
+        assert(M.supported(dfhack.getDFVersion(),dfhack.getOSType(),dfhack.internal.getPE()),
+            'No verified need calculation for this executable')
+        local caste=df.global.world.raws.creatures.all[u.race].caste[u.caste]
+        local out={}
+        for _,v in ipairs({{'hunger','hunger_timer','NO_EAT'}, {'thirst','thirst_timer','NO_DRINK'},
+                {'sleep','sleepiness_timer','NO_SLEEP'}}) do
+            local base=caste.flags[v[3]]
+            local added=u.uwss_add_caste_flag[v[3]]
+            local removed=u.uwss_remove_caste_flag[v[3]]
+            assert(type(base)=='boolean' and type(added)=='boolean' and type(removed)=='boolean',
+                'Creature requirement is unavailable')
+            local n=M.need(v[1],u.counters2[v[2]],not (not removed and (base or added)))
+            out[v[1]]={severity=n.severity,label=n.label,required=n.required}
         end
-        whole=add(whole,w);fraction=add(fraction,f)
-        whole=add(whole,floor(fraction/1000000));fraction=fraction%1000000
-    end
-    local weight=add(mul(whole,100),trunc(fraction/10000))
-    local free=capacity.native_capacity
-    local excess=max(0,weight-free)
-    local cost=0
-    if excess>0 and not ignored then
-        cost=excess>=1000000 and mul(trunc(excess/free),2000) or trunc(mul(excess,2000)/free)
-        cost=max(1,cost)
-    end
-    return {available=true,armor_skill_effective=skill,discounted_item_count=discounted,
-        effective_weight_kg=(whole*1000000+fraction)/1000000,native_weight=weight,
-        compared_weight_kg=weight/100,excess_weight_kg=excess/100,capacity_used_percent=weight/free*100,
-        movement_cost_added=cost,applied=cost>0,ignored=ignored,
-        units='native_movement_cost',source='Native root inventory caches, with native armor skill discounts'}
-end
-
--- Adventure HUD inventory icons (RVA 0xafa2ac..0xafa3c7). Its heavy
--- indicator starts strictly above 150% of capacity, not at the first penalty.
--- Compare native integer mass, not a rounded display percentage. These labels
--- describe the UI state; they do not assign controller threat/dispatch policy.
-function M.burden(weight,capacity)
-    integer(weight,0,2147483647);integer(capacity,1,2147483647)
-    local heavy=trunc(mul(capacity,3)/2)
-    local severity=weight>heavy and 2 or weight>capacity and 1 or 0
-    return {available=true,severity=severity,
-        state=({'unburdened','burdened','overburdened'})[severity+1],
-        label=({'Unburdened','Burdened','Overburdened'})[severity+1],
-        burdened=severity>0,overburdened=severity==2,
-        native_icon=severity==2 and 'ADVENTURE_BURDEN_HEAVY' or severity==1 and 'ADVENTURE_BURDEN_LIGHT' or nil,
-        compared_weight_kg=weight/100,capacity_used_percent=weight/capacity*100,
-        thresholds={burdened_above_kg=capacity/100,overburdened_above_kg=heavy/100},
-        source=M.build,
-        semantics='Native HUD burden indicator from skill-adjusted load; strict greater-than thresholds. Unburdened means no burden icon. Independent of controller risk policy.'}
+        return out
+    end)
+    return ok and result or {available=false,reason=tostring(result)}
 end
 
 -- Current native skill penalties (including the corrected 864000 sleep
@@ -317,10 +281,6 @@ function M.apply(u,out,h)
         return r
     end)
     local function state() assert(state_ok,tostring(s));return s end
-    out.encumbrance=out.encumbrance or {}
-    out.encumbrance.capacity=read('encumbrance.capacity',function()
-        local v=state();local r=M.capacity(v.size_cur,v.strength);r.source=M.build;return r
-    end)
     local function skill(name)
         -- The good-vision branch is verified. Blind/extravision perception
         -- requires another native helper; never pretend it is normal sight.
@@ -328,26 +288,6 @@ function M.apply(u,out,h)
         s.vision=true
         return M.skill(dfhack.units.getNominalSkill(u,df.job_skill[name],true),s)
     end
-    out.encumbrance.load_penalty=read('encumbrance.load_penalty',function()
-        local v=state();assert(out.encumbrance.capacity.available,'Carrying capacity is unavailable')
-        assert(#u.inventory<=4096,'Native inventory scan exceeds the 4096-entry bound')
-        local items={}
-        for index=0,#u.inventory-1 do
-            local inv=u.inventory[index];local item=inv.item
-            items[#items+1]={whole=item.weight.whole,fraction=item.weight.fraction,computed=item.flags.weight_computed,
-                mode=df.inv_item_role_type[inv.mode],armor=item:isArmor()}
-        end
-        return M.load(items,skill('ARMOR'),out.encumbrance.capacity,v.scuttle or v.ghost or v.turbospeed)
-    end)
-    out.encumbrance.burden=read('encumbrance.burden',function()
-        state()
-        assert(not u.flags1.rider and not u.flags1.ridden,'Mounted HUD burden requires a verified mount calculation')
-        assert(not u.uwss_att_change or not dfhack.units.isHidingCurse(u),
-            'Hidden-curse HUD capacity has not been verified')
-        assert(out.encumbrance.capacity.available and out.encumbrance.load_penalty.available,
-            'Native inventory load or carrying capacity is unavailable')
-        return M.burden(out.encumbrance.load_penalty.native_weight,out.encumbrance.capacity.native_capacity)
-    end)
     out.movement.effective_speed=read('movement.effective_speed',function()
         local v=state()
         assert(not u.flags1.rider and not u.flags1.ridden,'Mounted movement requires a verified mount calculation')
@@ -375,3 +315,6 @@ function M.apply(u,out,h)
     out.semantics.movement='Build-scoped calculation independent of UI/HUD visibility. Unknown inputs, unsupported mounted/vision states, and 32-bit arithmetic overflow are explicit'
 end
 return M
+
+end
+if dfhack_flags and dfhack_flags.module then factory=build else return build(...) end

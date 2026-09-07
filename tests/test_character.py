@@ -5,9 +5,10 @@ import unittest
 from unittest.mock import patch
 
 from dfharness.cli import main
-from dfharness.client import Client, make_program, render_observation
+from dfharness.client import Client, render_observation
 from dfharness.mcp import TOOLS, Server
 from dfharness.state import compact_result
+from dfharness.views import character_brief
 
 
 def sheet(available=True):
@@ -97,18 +98,28 @@ class CharacterStatusTests(unittest.TestCase):
             self.assertEqual(client.character_status(), expected)
         request.assert_called_once_with({"op": "character_status"})
 
-    def test_large_character_reader_is_only_loaded_for_character_queries(self):
-        marker = "Read-only character sheet. Loaded only for character_status requests."
-        self.assertIn(marker, make_program({"op": "character_status"}))
-        self.assertNotIn(marker, make_program({"op": "observe"}))
-        self.assertNotIn(marker, make_program({"op": "status"}))
-        details = "Character-owned profiles and capabilities. Only loaded by character queries."
-        self.assertIn(details, make_program({"op": "character_status"}))
-        self.assertNotIn(details, make_program({"op": "observe"}))
-        calculations = "Read-only DF 53.16 Windows calculations"
-        self.assertIn(calculations, make_program({"op": "character_status"}))
-        self.assertNotIn(calculations, make_program({"op": "observe"}))
-        self.assertNotIn(calculations, make_program({"op": "status"}))
+    def test_native_brief_coverage_does_not_claim_to_have_queried_full_status(self):
+        report = sheet()
+        report["character"]["coverage"] = {
+            "scope": "brief",
+            "complete": False,
+            "unavailable_count": 1,
+            "truncated_count": 0,
+            "sections": [{"section": "movement", "status": "partial"}],
+            "not_queried": ["personality", "body", "history"],
+        }
+        report["character"]["inventory"] = [
+            {"id": 495, "weight_computed": False, "contents_shown_in_full_view": 0}
+        ]
+        client = Client(port=1)
+        with patch.object(client, "request", return_value=report) as request:
+            brief = client.brief()
+        request.assert_called_once_with({"op": "character_brief", "ui_mode": "native"})
+        self.assertNotIn("full_report_coverage", brief["character"])
+        self.assertFalse(brief["character"]["query_coverage"]["complete"])
+        self.assertEqual(brief["omitted_sections"], ["personality", "body", "history"])
+        self.assertEqual(brief["character"]["inventory"][0]["contents_shown_in_full_view"], 0)
+        self.assertIn("weight_unavailable", brief["character"]["inventory"][0])
 
     def test_mcp_character_query_is_read_only_and_rejects_execution_options(self):
         client = Client(port=1)
@@ -270,10 +281,22 @@ class CharacterStatusTests(unittest.TestCase):
         item = {"id": 495, "weight_raw": {"whole": 17, "fraction": 511750}, "weight_computed": True}
         before = {"adventurer": {"inventory": [item]}}
         after = {"adventurer": {"inventory": [{**item, "weight_computed": False}]}}
-        changed = compact_result(after, before)["changes"]["inventory_changed"]
+        changed = compact_result(after, before)["changes"]["inventory"]["changed"]
         self.assertEqual(len(changed), 1)
-        self.assertTrue(changed[0]["before"]["weight_computed"])
-        self.assertFalse(changed[0]["after"]["weight_computed"])
+        self.assertEqual(changed[0]["changed"]["weight_kg"], [17.51175, None])
+
+    def test_partial_mass_keeps_native_cached_load_separate_in_text_and_brief(self):
+        result = sheet()
+        load = result["character"]["encumbrance"]
+        load.update(weight_complete=False, known_weight_kg=3.5, native_cached_weight_kg=21.08375)
+        del load["total_weight_kg"]
+        output = render_observation(result)
+        self.assertIn("Carried weight: unknown; known subtotal 3.5 kg", output)
+        self.assertIn("Native cached load: 21.08375 kg; contents not fully verified", output)
+        brief = character_brief(result)["character"]["encumbrance"]
+        self.assertIs(brief["weight_complete"], False)
+        self.assertEqual(brief["native_cached_weight_kg"], 21.08375)
+        self.assertNotIn("total_weight_kg", brief)
 
     def test_reading_summary_includes_calculations_and_need_stages_without_hud(self):
         result = sheet()
@@ -343,6 +366,12 @@ class CharacterStatusTests(unittest.TestCase):
             "capacity_used_percent": 156.186548,
         }
         self.assertIn("Burden: Overburdened (156.19% of capacity)", render_observation(result))
+        result["character"]["encumbrance"]["burden"] = {
+            "available": True,
+            "label": "Burdened",
+            "source": "dfhack_lua_unit_burden",
+        }
+        self.assertIn("Burden: Burdened", render_observation(result))
         result["character"]["encumbrance"]["burden"] = {
             "available": False,
             "reason": "Invalid weight cache",

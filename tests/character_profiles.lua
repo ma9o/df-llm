@@ -179,4 +179,36 @@ test('nested_inventory_truncation_is_not_reported_as_complete_coverage',function
     local r=f.run()
     assert(coverage(r,'inventory').status=='partial' and coverage(r,'inventory').truncated_count==1)
 end)
+test('native_dawn_calculation_and_its_unavailability_share_character_activity_coverage',function()
+    local f=fixture()
+    f.helpers.next_dawn={available=true,phase=0,world_region_x=0,remaining_calendar_ticks=253}
+    local r=f.run()
+    assert(r.activity.next_dawn.available and r.activity.next_dawn.phase==0)
+    f=fixture();f.helpers.next_dawn={available=false,reason='Unverified dawn model'}
+    r=f.run()
+    assert(r.activity.next_dawn.available==false)
+    local found=false
+    for _,v in ipairs(r.unavailable)do if v.path=='activity.next_dawn' then found=true end end
+    assert(found and coverage(r,'activity').status=='partial')
+end)
+test('brief_never_resolves_history_and_only_claims_queried_coverage',function()
+    local f=fixture();local touches=0
+    f.df.historical_figure.find=function() touches=touches+1;error('Unrequested historical figure') end
+    f.u.opponent=record{unit_id=-1};f.u.status.attacker_ids=vector{0,42}
+    f.helpers.profile='brief'
+    f.helpers.requested=function(path)
+        return ({identity=true,movement=true,health=true,attributes=true,skills=true,inventory=true,encumbrance=true,
+            physiology=true,combat=true})[path] or false
+    end
+    f.helpers.calculations={apply=function(_,out)
+        out.physiology.interpreted_needs={available=true,thirst={counter=0,required=false}}
+        out.movement.effective_speed={available=false,reason='Fixture missing gait'}
+        f.helpers.unavailable('movement.effective_speed','Fixture missing gait')
+    end}
+    local r=f.run()
+    assert(touches==0 and r.combat.opponent.unit_id==-1 and r.combat.attacker_ids[1]==0)
+    assert(r.physiology.interpreted_needs.thirst.required==false)
+    assert(r.coverage.scope=='brief' and #r.coverage.sections==9 and #r.coverage.not_queried==20)
+    assert(coverage(r,'movement').status=='partial' and r.history==nil and r.affiliation==nil)
+end)
 return results

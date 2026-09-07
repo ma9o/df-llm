@@ -1,81 +1,156 @@
 """Structured observations and controller-directed dispatches through DFHack."""
 
 import json
+import os
 import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 
+from .capabilities import capability_report
 from .config import port_for_game
-from .dispatch import execution_policy, run_dispatch
-from .rpc import DFHackError, DispatchError, run_command
-
-ASSETS = Path(__file__).parent
-MARKER = "__DFLLM_JSON__"
-
-
-def lua_string(value):
-    """A Lua literal that cannot be escaped by JSON strings or source code."""
-    # Quoted JSON is not a Lua literal (notably \uXXXX escapes). Long brackets
-    # are literal; the added newline prevents Lua stripping one from the input.
-    equals = ""
-    while "]" + equals + "]" in value:
-        equals += "="
-    return "[" + equals + "[\n" + value + "]" + equals + "]"
-
-
-def make_program(request):
-    request_json = json.dumps(request, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
-    character_reader = (
-        "assert(load(" + lua_string((ASSETS / "character.lua").read_text()) + "))"
-        if request.get("op") == "character_status"
-        else "nil"
-    )
-    character_details = (
-        "assert(load(" + lua_string((ASSETS / "character_details.lua").read_text()) + "))"
-        if request.get("op") == "character_status"
-        else "nil"
-    )
-    character_calculations = (
-        "assert(load(" + lua_string((ASSETS / "character_calculations.lua").read_text()) + "))()"
-        if request.get("op") == "character_status"
-        else "nil"
-    )
-    return (
-        "local glyph=assert(load(" + lua_string((ASSETS / "cp437.lua").read_text()) + "))();"
-        "local request=require('json.internal'):new{strictTypes=true}:decode("
-        + lua_string(request_json)
-        + ");"
-        "local result=assert(load("
-        + lua_string((ASSETS / "bridge.lua").read_text())
-        + "))(request,glyph,"
-        + character_reader
-        + ","
-        + character_details
-        + ","
-        + character_calculations
-        + ");"
-        "print('" + MARKER + "'..require('json').encode(result,{pretty=false}))"
-    )
+from .dispatch import run_dispatch
+from .metrics import Recorder, active, measured
+from .policy import execution_policy
+from .program import ASSETS as ASSETS
+from .program import MARKER, prepare_program
+from .program import lua_string as lua_string
+from .program import make_program as make_program
+from .rpc import (
+    BridgeError,
+    DFHackError,
+    DispatchError,
+    pending_pause,
+    response_timeout,
+    run_command,
+)
+from .settings import read_settings, settings_path, write_settings
+from .views import character_brief, choice_observation, concise_observation, render_view, unit_brief
 
 
 class Client:
-    def __init__(self, port=None, timeout=10.0, log_path=None, execution=None):
+    def __init__(
+        self,
+        port=None,
+        timeout=10.0,
+        log_path=None,
+        execution=None,
+        settings_path=None,
+        metrics_path=None,
+        metrics_run=None,
+        metrics_episode=None,
+        tokenizer=None,
+    ):
         self.port = port_for_game(port)
         self.timeout = timeout
         self.log_path = Path(log_path) if log_path else None
         self.log_lock = Lock()
-        self.execution = execution_policy(execution)
+        self.settings_path = settings_path
+        execution_policy(execution)  # Validate constructor overrides immediately.
+        self.execution_override = execution
+        self.metrics_path, self.metrics_run, self.tokenizer = metrics_path, metrics_run, tokenizer
+        self.metrics_episode = metrics_episode
+        self._metrics = None
+        self._metrics_config = None
+        self._metrics_disabled = Recorder()
 
+    @property
+    def metrics(self):
+        try:
+            saved = read_settings(self.settings_path)["measurement"]
+        except (OSError, ValueError) as exc:
+            # A query that does not need controller settings must not acquire a
+            # new failure mode just because its passive recorder reads them.
+            self._metrics_disabled.warn("settings unavailable", exc)
+            return self._metrics_disabled
+        explicit = (
+            self.metrics_path if self.metrics_path is not None else os.environ.get("DFLLM_METRICS")
+        )
+        if explicit is False or explicit == "off":
+            path = None
+        elif explicit:
+            path = Path(explicit).expanduser()
+        elif saved["enabled"]:
+            base = settings_path(self.settings_path).parent
+            path = base / Path(saved["path"] or "metrics.jsonl").expanduser()
+        else:
+            path = None
+        config = (
+            path,
+            self.metrics_run or os.environ.get("DFLLM_METRICS_RUN") or saved["run"],
+            self.tokenizer or saved["tokenizer"],
+            self.metrics_episode or os.environ.get("DFLLM_EPISODE") or saved["episode"],
+        )
+        if config != self._metrics_config:
+            self._metrics = Recorder(
+                config[0], run=config[1], encoding=config[2], episode=config[3]
+            )
+            self._metrics_config = config
+        return self._metrics
+
+    @property
+    def execution(self):
+        return execution_policy(
+            read_settings(self.settings_path)["execution"], self.execution_override
+        )
+
+    @measured
+    def settings(self, update=None, reset=False):
+        saved = (
+            write_settings(update or {}, self.settings_path, reset)
+            if update is not None or reset
+            else read_settings(self.settings_path)
+        )
+        effective = dict(
+            saved, execution=execution_policy(saved["execution"], self.execution_override)
+        )
+        return {
+            "path": str(settings_path(self.settings_path)),
+            "saved": saved,
+            "effective": effective,
+            "precedence": "built-in < saved < client constructor < dispatch override",
+        }
+
+    @measured
     def request(self, request):
         started = time.monotonic()
-        output = run_command("lua", make_program(request), port=self.port, timeout=self.timeout)
-        lines = [line[len(MARKER) :] for line in output.splitlines() if line.startswith(MARKER)]
-        if len(lines) != 1:
-            raise DFHackError("DFHack returned no unique structured response: " + output[-2000:])
-        envelope = json.loads(lines[0])
-        if self.log_path and request.get("op") != "poll":
+        program = prepare_program(request)
+        source = program.render()
+        transport = {
+            "rpc_calls": 1,
+            "request_bytes": len(source.encode()),
+            "loader": "dfhack_script_path",
+        }
+        recorder = active().recorder
+        with recorder.rpc(request.get("op", "unknown"), transport["request_bytes"]) as sample:
+            output = run_command(
+                "lua", source, port=self.port, timeout=response_timeout(self.timeout)
+            )
+            sample["output_bytes"] = len(output.encode("utf-8"))
+            lines = [line[len(MARKER) :] for line in output.splitlines() if line.startswith(MARKER)]
+            if len(lines) != 1:
+                raise DFHackError(
+                    "DFHack returned no unique structured response: " + output[-2000:]
+                )
+            envelope = json.loads(lines[0])
+            if envelope.get("ok") is False:
+                sample.update(outcome="error", code=envelope.get("code", "bridge_error"))
+            payload = envelope.get("result")
+            if request.get("op") == "poll" and isinstance(payload, dict):
+                sample["variant"] = next(
+                    (
+                        label
+                        for field, label in (
+                            ("pending_view", "pending"),
+                            ("view_delta", "delta"),
+                            ("view", "full"),
+                        )
+                        if field in payload
+                    ),
+                    "readiness",
+                )
+        if self.log_path and (request.get("op") != "poll" or request.get("observe")):
             with self.log_lock:
                 self.log_path.parent.mkdir(parents=True, exist_ok=True)
                 with self.log_path.open("a", encoding="utf-8") as log:
@@ -83,8 +158,10 @@ class Client:
                         json.dumps(
                             {
                                 "at": datetime.now(UTC).isoformat(),
+                                "trace_id": active().id,
                                 "request": request,
                                 "response": envelope,
+                                "transport": transport,
                                 "elapsed_ms": round((time.monotonic() - started) * 1000),
                             },
                             ensure_ascii=False,
@@ -92,27 +169,108 @@ class Client:
                         + "\n"
                     )
         if not envelope.get("ok"):
-            raise DFHackError(envelope.get("error", "Unknown DFHack bridge error"))
+            raise BridgeError(
+                envelope.get("error", "Unknown DFHack bridge error"),
+                envelope.get("code", "bridge_error"),
+                envelope.get("details"),
+                envelope.get("input_sent"),
+            )
         return envelope["result"]
 
+    @measured
     def status(self):
         return self.character_status()
 
+    @measured
     def game_status(self):
         return self.request({"op": "status"})
 
+    @measured
+    def capabilities(self):
+        return capability_report(self.request({"op": "capabilities"}))
+
+    @measured
+    def actions(self, name=None):
+        from .actions import action_reference
+
+        return action_reference(name)
+
+    @measured
+    def navigation(self, limit=20):
+        return self.request({"op": "navigation", "limit": limit})
+
+    @measured
     def character_status(self):
         return self.request({"op": "character_status"})
 
-    def observe(self, width=41, height=21, center=None, map=True, radius=20):
+    @measured
+    def brief(self):
+        return character_brief(self.request({"op": "character_brief", "ui_mode": "native"}))
+
+    @measured
+    def unit(self, unit_id, view="concise"):
+        if view not in ("concise", "full"):
+            raise ValueError("view must be concise or full")
+        result = self.request({"op": "unit", "unit_id": unit_id})
+        return unit_brief(result) if view == "concise" else result
+
+    @measured
+    def observe(
+        self,
+        width=41,
+        height=21,
+        center=None,
+        map=True,
+        radius=20,
+        view=None,
+        target_unit_id=None,
+        conversation_activity=None,
+        event_detail=None,
+        reports_after=None,
+        report_limit=None,
+    ):
+        settings = read_settings(self.settings_path)
+        view = view or settings["observation_view"]
+        event_detail = settings["event_detail"] if event_detail is None else event_detail
+        if event_detail not in ("task", "all"):
+            raise ValueError("event_detail must be task or all")
+        if view not in ("concise", "full", "choices"):
+            raise ValueError("view must be concise, full or choices")
         request = {"op": "observe", "width": width, "height": height, "map": map}
+        if view != "full":
+            request["ui_mode"] = "native"
+        if view == "choices":
+            request["scope"] = "choices"
         request["radius"] = radius
         if center is not None:
             request["center"] = center
-        return self.request(request)
+        if target_unit_id is not None:
+            request["target_unit_id"] = target_unit_id
+        if conversation_activity is not None:
+            request["conversation_activity"] = conversation_activity
+        if reports_after is not None:
+            if type(reports_after) is not int or reports_after < -1:
+                raise ValueError("reports_after must be an integer >= -1")
+            request["reports_after"] = reports_after
+        if report_limit is not None:
+            if type(report_limit) is not int or not 1 <= report_limit <= 4096:
+                raise ValueError("report_limit must be an integer in [1, 4096]")
+            request["report_limit"] = report_limit
+        value = self.request(request)
+        if view == "choices":
+            return choice_observation(value)
+        return (
+            concise_observation(
+                value, event_detail, self.execution["interrupt_on"].get("report_types", [])
+            )
+            if view == "concise"
+            else value
+        )
 
+    @measured
     def wait_ready(self, action_id=None, timeout=30):
         deadline = time.monotonic() + timeout
+        pending_polls = 0
         while True:
             request = {"op": "poll"}
             if action_id:
@@ -122,45 +280,78 @@ class Client:
                 raise DFHackError("Action may have partially executed: " + state["action_error"])
             if state["ready"]:
                 return state
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise DFHackError(
                     f"Timed out waiting for game input readiness (action {action_id}). "
                     "The action was not retried. Use wait-ready or observe. "
                     f"Current focus: {state['status']['focus']}; phase: {state['status'].get('turn_phase')}"
                 )
-            time.sleep(0.05)
+            time.sleep(pending_pause(pending_polls, remaining))
+            pending_polls += 1
 
+    @measured
     def act(
         self,
         action,
         expect=None,
         request_id=None,
-        timeout=30,
+        timeout=None,
         execution=None,
-        result_format="compact",
+        result_format=None,
+        event_detail=None,
     ):
+        settings = read_settings(self.settings_path)
+        timeout = settings["dispatch_timeout"] if timeout is None else timeout
+        result_format = settings["result_format"] if result_format is None else result_format
+        event_detail = settings["event_detail"] if event_detail is None else event_detail
         request_id = request_id or str(uuid.uuid4())
         try:
-            return run_dispatch(self, action, expect, request_id, timeout, execution, result_format)
+            return run_dispatch(
+                self, action, expect, request_id, timeout, execution, result_format, event_detail
+            )
         except DFHackError as exc:
             raise DispatchError(request_id, exc) from exc
 
+    @measured
     def items(self, radius=20):
         return self.request({"op": "items", "radius": radius})
 
+    @measured
     def item(self, item_id):
         return self.request({"op": "item", "item_id": item_id})
 
+    @measured
     def interrupt(self, dispatch_id):
         return self.request({"op": "interrupt", "dispatch_id": dispatch_id})
 
+    @measured
+    def dispatch_details(self, dispatch_id, section="events"):
+        if section not in ("events", "prompts", "steps", "summary", "full", "compact"):
+            raise ValueError("Unknown dispatch detail section")
+        return self.request(
+            {"op": "dispatch_details", "dispatch_id": dispatch_id, "section": section}
+        )
+
+    @measured
     def inspect(self, x, y, z):
         return self.request({"op": "inspect", "x": x, "y": y, "z": z})
 
 
 def render_observation(observation):
+    if observation.get("format") == "compact" and observation.get("schema_version") == 2:
+        from .state import render_receipt
+
+        return render_receipt(observation)
     if observation.get("format") == "character_status":
         return render_character_status(observation)
+    if observation.get("format") in (
+        "character_brief",
+        "concise_observation",
+        "choice_observation",
+        "unit_status",
+    ):
+        return render_view(observation)
     s = observation["status"]
     lines = [
         f"# {s['df_version']} | DFHack {s['dfhack_version']} | {s['mode']}",
@@ -178,13 +369,18 @@ def render_observation(observation):
         lines.append("# Prompt: " + json.dumps(s["modal"]))
     if observation.get("dispatch"):
         d = observation["dispatch"]
+        count = d.get("native_input_count", len(d.get("steps", [])))
         lines.append(
-            f"# Dispatch: {d['id']} | {d['outcome']} | {len(d['steps'])} steps | {d['reason']}"
+            f"# Dispatch: {d['id']} | {d['outcome']} | {count} native inputs | {d['reason']}"
         )
         for field, label in (
             ("resume_action", "Resume"),
             ("next_action", "Next input"),
             ("details", "Details"),
+            ("progress", "Progress"),
+            ("blocker", "Blocker"),
+            ("results", "Verified stages"),
+            ("replies", "Replies"),
             ("prompts", "Handled prompts"),
             ("prompt_sequence", "Prompt order"),
         ):
@@ -198,7 +394,11 @@ def render_observation(observation):
         lines.append(
             "# Conversation: " + json.dumps(observation["conversation"], ensure_ascii=False)
         )
+    if observation.get("combat"):
+        lines.append("# Combat: " + json.dumps(observation["combat"], ensure_ascii=False))
     if observation.get("format") == "compact":
+        if observation.get("current"):
+            lines.append("# Current: " + json.dumps(observation["current"], ensure_ascii=False))
         lines.append("# Changes: " + json.dumps(observation.get("changes", {}), ensure_ascii=False))
         if observation.get("menu"):
             lines.append("# Choices: " + json.dumps(observation["menu"], ensure_ascii=False))
@@ -272,11 +472,16 @@ def render_character_status(observation):
                 kg(load["known_weight_kg"]) + " kg" if "known_weight_kg" in load else "unavailable"
             )
             lines.append(f"Carried weight: unknown; known subtotal {subtotal}")
+            if "native_cached_weight_kg" in load:
+                lines.append(
+                    f"Native cached load: {kg(load['native_cached_weight_kg'])} kg; contents not fully verified"
+                )
         burden = load.get("burden", {})
         if burden.get("available"):
-            lines.append(
-                f"Burden: {burden['label']} ({burden['capacity_used_percent']:.2f}% of capacity)"
-            )
+            summary = "Burden: " + burden["label"]
+            if "capacity_used_percent" in burden:
+                summary += f" ({burden['capacity_used_percent']:.2f}% of capacity)"
+            lines.append(summary)
         else:
             lines.append("Burden: unavailable — " + burden.get("reason", "Not reported"))
         for group in load.get("by_mode", []):
