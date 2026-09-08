@@ -30,6 +30,28 @@ test('missing interfaces report unknown instead of a healthy empty screen',funct
     local r=m.panels();assert(not r.available and r.reason)
     env.df.global.game=saved
 end)
+test('enlarged travel map is native UI state independent of rendered geometry',function()
+    env.df.ui_advmode_menu={Travel=3}
+    env.df.adventurest={T_travel_right_map={MapNone=0,MapSite=7,MapWorld=9,[0]='MapNone',[7]='MapSite',[9]='MapWorld'}}
+    env.df.interface_key.A_TRAVEL_MAP=0
+    env.df.global.adventure={menu=3,travel_right_map=0}
+    local r=m.travel_map();assert(r.available and r.open==false and r.mode=='MapNone' and not r.close_key)
+    assert(m.panels().flags.travel_map==false)
+    env.df.global.adventure.travel_right_map=7
+    r=m.travel_map();assert(r.available and r.open and r.close_key=='A_TRAVEL_MAP')
+    assert(m.panels().flags.travel_map==true)
+    env.df.interface_key.A_TRAVEL_MAP=nil
+    r=m.travel_map();assert(r.available and r.open and not r.close_key and r.reason)
+    env.df.interface_key.A_TRAVEL_MAP=0
+    env.df.global.adventure.travel_right_map=9
+    r=m.travel_map();assert(r.available and r.open and not r.close_key and r.reason)
+    env.df.global.adventure.travel_right_map=13
+    r=m.travel_map();assert(not r.available and r.reason and r.open==nil)
+    assert(not m.panels().available)
+    env.df.global.adventure=setmetatable({menu=0},{__index=function()error('inactive travel field read')end})
+    assert(m.panels().available and not m.panels().flags.travel_map)
+    env.df.global.adventure=nil
+end)
 test('saving readiness reads only active options and preserves false',function()
     assert(m.saving()==false)
     save_panel.open=true;assert(m.saving()==true)

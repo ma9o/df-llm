@@ -732,9 +732,46 @@ def next_travel(workflow, view):
     return {"input": {"type": "key", "key": "A_MOVE_" + direction}}
 
 
+def close_travel_map(workflow, view):
+    """An enlarged map is a determined UI prerequisite, not another play decision."""
+    travel = view["status"].get("travel") or {}
+    if not travel.get("active"):
+        return None
+    panel = travel.get("map_view") or {}
+    facts = {"map_view": panel}
+    if panel.get("available") is not True or type(panel.get("open")) is not bool:
+        return result(
+            "needs_input",
+            "The native travel map view is unavailable.",
+            {"blocker_kind": "travel_map_unavailable", "facts": facts},
+        )
+    ctx = workflow.setdefault("context", {})
+    if not panel["open"]:
+        ctx.pop("closing_travel_map", None)
+        return None
+    if ctx.get("closing_travel_map"):
+        return result(
+            "no_effect",
+            "The enlarged map did not close; its toggle was not repeated.",
+            {"blocker_kind": "travel_map_close", "facts": facts},
+        )
+    if not panel.get("close_key"):
+        return result(
+            "needs_input",
+            "This enlarged map has no verified native close binding.",
+            {"blocker_kind": "travel_map_unavailable", "facts": facts},
+        )
+    ctx["closing_travel_map"] = True
+    return {"input": {"type": "key", "key": panel["close_key"]}}
+
+
 def next_step(workflow, view):
     action, ctx = workflow["action"], workflow.setdefault("context", {})
     kind = action["type"]
+    if kind in SEMANTIC:
+        prerequisite = close_travel_map(workflow, view)
+        if prerequisite is not None:
+            return prerequisite
     if kind == "empty_container":
         from .storage import next_empty
 

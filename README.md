@@ -762,6 +762,12 @@ available route through the current native site grid, then direct overland
 waypoints. It returns at blocked movement, a native restriction, or a forced
 exit from travel. `end-travel` returns to local mode and verifies map loading;
 it does not promise an exact local arrival tile chosen by the game.
+The enlarged travel map is read from `adventure.travel_right_map` and included
+in native input/effect guards and `open_panels`. Semantic objectives close it
+with `A_TRAVEL_MAP` before continuing, using the same execution budget and resume
+checkpoint. The exposed legacy mode name `MapSite` identifies this enlarged map
+in the installed Premium game. Missing modes or unverified close bindings return
+a concrete blocker; explicit development keys can still leave the map open.
 Travel tiles are 16 local tiles; three travel tiles make one embark tile.
 Overland input can advance three travel tiles asynchronously while the native
 phase still says `TAKING_INPUT`. Its receipt waits for 250 ms of unchanged native

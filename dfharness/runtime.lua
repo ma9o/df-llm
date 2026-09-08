@@ -13,7 +13,28 @@ local function resolve(path)
     for name in path:gmatch('[^.]+') do current=current[name] end
     return current
 end
-function M.panels()
+function M.travel_map()
+    local out={available=false,source='adventure.travel_right_map'}
+    local ok,err=pcall(function()
+        local a=df.global.adventure
+        assert(a.menu==df.ui_advmode_menu.Travel,'Travel is not active')
+        local mode=a.travel_right_map
+        local enum=df.adventurest.T_travel_right_map
+        assert(type(mode)=='number' and type(enum.MapNone)=='number','Native travel map mode is unavailable')
+        out.mode=enum[mode]
+        assert(type(out.mode)=='string','Unknown native travel map mode')
+        out.open=mode~=enum.MapNone
+        -- The exposed legacy name MapSite now denotes the enlarged world map.
+        -- A_TRAVEL_MAP toggles this view without moving or advancing time.
+        if out.open and out.mode=='MapSite' and type(df.interface_key.A_TRAVEL_MAP)=='number' then
+            out.close_key='A_TRAVEL_MAP'
+        elseif out.open then out.reason='This native map mode has no verified close binding' end
+        out.available=true
+    end)
+    if not ok then out.reason=tostring(err):sub(1,240)end
+    return out
+end
+function M.panels(travel_map)
     local out={available=true,flags={},unclassified=h.array()}
     local ok,err=pcall(function()
         -- Two known interface structs only. Adventure also uses shared panels
@@ -29,6 +50,12 @@ function M.panels()
             end end
         end
         scan(main.adventure,'');scan(main,'main.')
+        local a=df.global.adventure
+        if a and a.menu==df.ui_advmode_menu.Travel then
+            local map=travel_map or M.travel_map()
+            assert(map.available,map.reason)
+            out.flags.travel_map=map.open
+        end
     end)
     if not ok then out.available=false;out.reason=tostring(err):sub(1,240) end
     table.sort(out.unclassified)
@@ -181,7 +208,9 @@ local requirements={
         'df.adventure_interface_attack_mode_type.MOVE_CHOICE'},
     travel={'df.interface_key.A_TRAVEL','df.interface_key.A_END_TRAVEL','df.global.adventure.travel_origin_x',
         'df.global.adventure.travel_origin_y','df.global.adventure.travel_not_moved',
-        'df.global.adventure.offload_timer','df.adventure_travel_exception_type.NONE'},
+        'df.global.adventure.offload_timer','df.adventure_travel_exception_type.NONE',
+        'df.global.adventure.travel_right_map','df.adventurest.T_travel_right_map.MapNone',
+        'df.adventurest.T_travel_right_map.MapSite','df.interface_key.A_TRAVEL_MAP'},
     posture={'df.interface_key.A_STANCE'},
     sneaking={'df.interface_key.A_SNEAK'},
     movement={'df.interface_key.A_MOVEMENT','df.global.game.main_interface.adventure.movement_options.open',

@@ -66,6 +66,15 @@ test('input serial is excluded only from effect identity',function()
     assert(guard(s,ui,n)~=guard(changed,ui,n))
     assert(guard(s,ui,n,true)==guard(changed,ui,n,true))
 end)
+test('travel map toggles change input and effect identity without simulation time',function()
+    local before=copy(s);before.open_panels={}
+    before.travel={active=true,position={x=1,y=2,z=0},map_view={available=true,open=false,mode='MapNone'}}
+    local after=copy(before);after.travel.map_view={available=true,open=true,mode='MapSite',close_key='A_TRAVEL_MAP'}
+    assert(guard(before,ui,n)~=guard(after,ui,n))
+    assert(guard(before,ui,n,true)~=guard(after,ui,n,true))
+    local changed=copy(ui);changed.rows[1].text='Repainted map'
+    assert(guard(after,ui,n)==guard(after,changed,n))
+end)
 test('portable checkpoint excludes reload/render counters but retains simulation facts',function()
     local before=copy(s);before.world_epoch='a';before.local_map_epoch='a.1'
     before.year=100;before.year_tick=42;before.save='first';before.viewport={zoom=64}

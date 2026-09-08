@@ -76,7 +76,7 @@ local function travel_info()
             thirst_timer=m.thirst_timer,sleepiness_timer=m.sleepiness_timer}
     end end
     return {active=active,position=p,position_source=p and (army and a.travel_not_moved==0 and 'player_army' or 'travel_origin'),
-        activity=runtime.army_activity(army),
+        activity=runtime.army_activity(army),map_view=active and runtime.travel_map() or nil,
         coordinates='travel tiles (16 local tiles; 3 per embark tile; 48 per world region)',
         not_moved=a.travel_not_moved~=0,site_zoom=a.site_level_zoom~=0,party_needs=members,
         exception={type=exception,id=a.travel_exception_id,message=text(a.message)},
@@ -128,7 +128,7 @@ local function status(ui)
         if not out.travel.activity.available then
             out.interface_unavailable=out.travel.activity.reason;out.ready_for_input=false
         end
-        local panels=runtime.panels()
+        local panels=runtime.panels(out.travel.map_view)
         for name,open in pairs(panels.flags) do if open then out.open_panels[#out.open_panels+1]=name end end
         table.sort(out.open_panels)
         if not panels.available then out.interface_unavailable=panels.reason end
@@ -522,6 +522,7 @@ native_guard=function(s,ui)
         ['main.options']=menu and menu.kind=='options' and not menu.selection_unavailable,
         sleep=menu and menu.kind=='rest' and not menu.selection_unavailable,
         movement_options=menu and menu.kind=='movement' and not menu.selection_unavailable,
+        travel_map=s.travel and s.travel.map_view and s.travel.map_view.available,
         help=s.modal and s.modal.kind=='help' and type(s.modal.text)=='table',
         conversation=conversation.open and not conversation.selection_unavailable,
         attack=combat.open and not combat.selection_unavailable}

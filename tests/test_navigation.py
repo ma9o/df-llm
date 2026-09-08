@@ -8,7 +8,7 @@ from tests.support import FullClient as Client
 from tests.test_workflows import scene
 
 
-def travel_scene(name, x=1, y=1, *, active=True, exception="NONE"):
+def travel_scene(name, x=1, y=1, *, active=True, exception="NONE", map_open=False):
     v = scene(name)
     v["status"]["can_move"] = not active
     v["status"]["travel"] = {
@@ -16,6 +16,12 @@ def travel_scene(name, x=1, y=1, *, active=True, exception="NONE"):
         "position": {"x": x, "y": y, "z": 0},
         "world_size": {"x": 100, "y": 100},
         "exception": {"type": exception, "message": "native restriction"},
+        "map_view": {
+            "available": True,
+            "open": map_open,
+            "mode": "MapSite" if map_open else "MapNone",
+            **({"close_key": "A_TRAVEL_MAP"} if map_open else {}),
+        },
     }
     return v
 
@@ -96,6 +102,84 @@ class NavigationTests(unittest.TestCase):
             self.client(b).act({"type": "end_travel"})["dispatch"]["outcome"], "needs_input"
         )
         self.assertEqual(b.inputs, [])
+
+    def test_enlarged_map_closes_before_travel_or_exit(self):
+        for action, after, key in [
+            ({"type": "travel_to", "x": 2, "y": 1}, travel_scene("arrived", x=2), "A_MOVE_E"),
+            ({"type": "end_travel"}, travel_scene("local", active=False), "A_END_TRAVEL"),
+        ]:
+            with self.subTest(action=action):
+                after["status"]["map_loaded"] = True
+                b = Bridge(travel_scene("map", map_open=True), [travel_scene("closed"), after])
+                r = self.client(b).act(action)
+                self.assertEqual(r["dispatch"]["outcome"], "completed")
+                self.assertEqual([i["key"] for i in b.inputs], ["A_TRAVEL_MAP", key])
+
+    def test_explicit_development_key_can_open_and_leave_the_map_open(self):
+        b = Bridge(travel_scene("closed"), [travel_scene("map", map_open=True)])
+        r = self.client(b).act({"type": "key", "key": "A_TRAVEL_MAP"})
+        self.assertEqual(r["dispatch"]["outcome"], "completed")
+        self.assertTrue(r["status"]["travel"]["map_view"]["open"])
+        self.assertEqual([i["key"] for i in b.inputs], ["A_TRAVEL_MAP"])
+
+    def test_map_closure_obeys_incremental_execution_and_resumes_once(self):
+        b = Bridge(
+            travel_scene("map", map_open=True),
+            [travel_scene("closed"), travel_scene("arrived", x=2)],
+        )
+        c = self.client(b)
+        first = c.act({"type": "travel_to", "x": 2, "y": 1}, execution={"mode": "step"})
+        self.assertEqual(first["dispatch"]["outcome"], "in_progress")
+        self.assertEqual([i["key"] for i in b.inputs], ["A_TRAVEL_MAP"])
+        last = c.act(first["dispatch"]["resume_action"])
+        self.assertEqual(last["dispatch"]["outcome"], "completed")
+        self.assertEqual([i["key"] for i in b.inputs], ["A_TRAVEL_MAP", "A_MOVE_E"])
+
+    def test_failed_map_toggle_is_not_repeated_even_on_resume(self):
+        b = Bridge(travel_scene("map", map_open=True), [travel_scene("still-open", map_open=True)])
+        c = self.client(b)
+        first = c.act({"type": "travel_to", "x": 2, "y": 1}, result_format="compact")
+        self.assertEqual(first["outcome"], "no_effect")
+        again = c.act(first["resume"], result_format="compact")
+        self.assertEqual(again["blocker"]["kind"], "travel_map_close")
+        self.assertTrue(again["blocker"]["facts"]["map_view"]["open"])
+        self.assertEqual([i["key"] for i in b.inputs], ["A_TRAVEL_MAP"])
+
+    def test_unavailable_map_mode_or_binding_does_not_send_input(self):
+        for panel in (
+            None,
+            {"available": False, "reason": "missing"},
+            {"available": True},
+            {"available": True, "open": True, "mode": "NewNativeMode"},
+        ):
+            with self.subTest(panel=panel):
+                view = travel_scene("unknown")
+                view["status"]["travel"]["map_view"] = panel
+                b = Bridge(view)
+                receipt = self.client(b).act({"type": "end_travel"}, result_format="compact")
+                self.assertEqual(receipt["blocker"]["kind"], "travel_map_unavailable")
+                self.assertEqual(b.inputs, [])
+
+    def test_sequence_closes_map_once_and_shares_input_budget(self):
+        b = Bridge(
+            travel_scene("map", map_open=True),
+            [travel_scene("closed"), travel_scene("middle", x=2), travel_scene("arrived", x=3)],
+        )
+        c = self.client(b)
+        first = c.act(
+            {
+                "type": "sequence",
+                "actions": [
+                    {"type": "travel_to", "x": 2, "y": 1},
+                    {"type": "travel_to", "x": 3, "y": 1},
+                ],
+            },
+            execution={"max_steps": 2},
+        )
+        self.assertEqual(first["dispatch"]["outcome"], "limit_reached")
+        last = c.act(first["dispatch"]["resume_action"])
+        self.assertEqual(last["dispatch"]["outcome"], "completed")
+        self.assertEqual([i["key"] for i in b.inputs], ["A_TRAVEL_MAP", "A_MOVE_E", "A_MOVE_E"])
 
     def test_observed_coarse_stride_stops_before_oscillating_around_an_exact_target(self):
         before, near = travel_scene("before", x=10), travel_scene("near", x=7)
