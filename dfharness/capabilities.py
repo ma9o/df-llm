@@ -8,6 +8,16 @@ from .rpc import POLL_MAX_SECONDS, POLL_MIN_SECONDS
 
 GROUPS = (
     (
+        ("trade",),
+        ("core", "local_map", "inventory", "barter", "barter_submit"),
+        "Exact native offer and guarded character-layer Trade button; verifies item quantities and player currency. Counteroffers return control. Held sale items only; containers unsupported. Live purchase, refusal, sale and no-input verification resume exercised.",
+    ),
+    (
+        ("open_trade", "close_trade"),
+        ("core", "local_map", "conversation", "barter"),
+        "Explicit merchant and Shop zone; DF rebuilds the native catalog. Existing offers are preserved. Catalog selection does not transact.",
+    ),
+    (
         ("save_game",),
         ("core", "saving"),
         "Native save finishes and the requested world file is newly written",
@@ -23,9 +33,14 @@ GROUPS = (
         "Portion, native report and need effect verified",
     ),
     (
-        ("walk_to", "use_stairs"),
+        ("walk_to", "use_stairs", "move"),
         ("core", "local_map"),
         "Requested position verified; walk_to uses native path goals when native_path dependencies are present and no explicit route constraints were supplied",
+    ),
+    (
+        ("wait",),
+        ("core", "local_map"),
+        "One native short wait advances game time and settles; supports sequence and explicit resume without resending an unverified input",
     ),
     (
         ("empty_container",),
@@ -130,22 +145,23 @@ def capability_report(native):
         "visible_unit_scan": 32768,
     }
     result["readers"] = {
+        "barter": "Active native trade catalog; item type filtering before detailed reads, explicit limits and unknown weights",
         "actions": "Local action reference and exact shared schemas; no game connection",
         "status": "Comprehensive character query; its per-section coverage is authoritative",
         "burden": "DFHack Lua helper reads unit/item state independently of panels; capacity, skill-adjusted load, load penalty and burden; no screen scan or cache refresh",
         "observe": "Local ASCII terrain, visible units/items, health, needs, current native choices",
         "navigation": "Native current site/biome, travel coordinates, site grid and character-known rumors",
         "locate": "Explicit gui/adv-finder world-record lookup by historical figure or artifact ID",
-        "world_scan": "Search the whole bounded world site index by native type/subtype or name; one native snapshot, optional parallel filters outside the game",
+        "world_scan": "Search the bounded world site index by native type/subtype, flag or name; one native snapshot and one local pass",
         "unit": "Visible character inspection, native classifications and targetable anatomy; concise skips deep item reads",
         "dispatch_details": "Read saved outcomes, events, prompts and execution traces",
-        "session": "Save-scoped dispatch index; explicit fresh-stage resume with matching native state, no pending-input replay",
+        "session": "Recent in-memory dispatch IDs; same-world resume across controller restarts, revoked on game restart or world reload",
     }
     result["remaining_semantic_work"] = [
         "Wrestling, defense, charge, multiattack and ranged combat",
         "Pouring between containers and drinking directly from wells or ground containers",
         "Swimming preferences and changing locomotion mode",
-        "Barter, crafting, performances and abilities",
+        "Trading containers and preparing equipped sale items inside trade; crafting, performances and abilities",
         "Companion orders, mounts and tracking",
         "Quest commitments and special interaction choices beyond conversation tacts",
     ]

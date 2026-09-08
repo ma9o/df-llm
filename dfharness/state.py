@@ -6,7 +6,7 @@ from typing import Any
 
 from .character_progress import compact_progress, progress_changes
 from .events import project_events
-from .views import pick, reading_coatings, reading_menu
+from .views import pick, reading_coatings, reading_menu, render_view
 
 
 def flatten(items):
@@ -552,8 +552,14 @@ def compact_result(
         for kind in ("menu", "conversation", "combat"):
             menu = view.get(kind)
             if menu and menu.get("open", True):
-                result["choices"] = reading_menu(menu, focus)
-                break
+                choices = reading_menu(menu, focus)
+                if (
+                    choices.get("options")
+                    or choices.get("choosing_amount")
+                    or choices.get("entering_number")
+                ):
+                    result["choices"] = choices
+                    break
         if "choices" not in result and dispatch.get("details", {}).get("options"):
             result["choices"] = reading_menu({"options": dispatch["details"]["options"]}, focus)
         if view.get("input_guard", {}).get("native_complete") is not True and (
@@ -659,4 +665,6 @@ def render_receipt(receipt):
     lines.append(f"dispatch={receipt.get('dispatch_id')} state={receipt.get('state_id')}")
     if receipt.get("resume"):
         lines.append(f"Resume: {receipt['resume']['dispatch_id']}")
+    if "after" in receipt:
+        lines.append("After:\n" + render_view(receipt["after"]))
     return "\n".join(lines)

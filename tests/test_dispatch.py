@@ -92,6 +92,9 @@ class DispatchTests(unittest.TestCase):
         client = Client(port=1, execution=defaults)
         action = action or {"type": "key", "key": "A_TALK"}
         initial = view("before")
+        if action["type"] == "move":
+            initial["status"].update(can_move=True, position={"x": 1, "y": 1, "z": 0})
+            views[-1]["status"].update(can_move=True, position={"x": 1, "y": 0, "z": 0})
         if action["type"] == "resume":
             initial, views = views[0], views[1:]
         bridge = Bridge(initial, views)
@@ -164,7 +167,7 @@ class DispatchTests(unittest.TestCase):
 
     def test_completion_policy_does_not_depend_on_action_risk(self):
         for action in (
-            {"type": "wait"},
+            {"type": "key", "key": "A_SHORT_WAIT"},
             {"type": "move", "direction": "n"},
             {"type": "key", "key": "A_ATTACK"},
             {"type": "click", "x": 1, "y": 1},
@@ -229,7 +232,9 @@ class DispatchTests(unittest.TestCase):
             }
             with patch.object(client, "request", return_value=receipt) as request:
                 result = client.act(
-                    {"type": "wait"}, request_id="old", execution={"mode": "complete"}
+                    {"type": "key", "key": "A_SHORT_WAIT"},
+                    request_id="old",
+                    execution={"mode": "complete"},
                 )
             self.assertEqual([c.args[0]["op"] for c in request.call_args_list], ["begin_dispatch"])
             self.assertTrue(result["dispatch_replayed"])
@@ -255,7 +260,7 @@ class DispatchTests(unittest.TestCase):
             patch.object(client, "request", side_effect=bridge),
             patch("dfharness.dispatch.time.monotonic", side_effect=[0, 0, 2]),
         ):
-            result = client.act({"type": "wait"}, timeout=1)
+            result = client.act({"type": "key", "key": "A_SHORT_WAIT"}, timeout=1)
         self.assertEqual(result["dispatch"]["outcome"], "limit_reached")
         self.assertEqual(len(result["dispatch"]["steps"]), 1)
         self.assertEqual(result["dispatch"]["events"], [report(1)])
@@ -279,7 +284,7 @@ class DispatchTests(unittest.TestCase):
             patch.object(client, "request", side_effect=bridge),
             patch("dfharness.dispatch.time.sleep"),
         ):
-            result = client.act({"type": "wait"}, result_format="full")
+            result = client.act({"type": "key", "key": "A_SHORT_WAIT"}, result_format="full")
         self.assertEqual(result["effect_id"], "finished")
         self.assertEqual(polls, 3)
 
@@ -303,7 +308,8 @@ class DispatchTests(unittest.TestCase):
             patch("dfharness.dispatch.time.sleep") as pause,
         ):
             receipt = client.act(
-                {"type": "wait"}, execution={"mode": "complete", "acknowledge": True}
+                {"type": "key", "key": "A_SHORT_WAIT"},
+                execution={"mode": "complete", "acknowledge": True},
             )
         self.assertEqual(receipt["dispatch"]["outcome"], "completed")
         self.assertEqual(
@@ -321,7 +327,7 @@ class DispatchTests(unittest.TestCase):
             patch("dfharness.dispatch.time.monotonic", side_effect=[0, 0, 0.99, 1.01]),
             patch("dfharness.dispatch.time.sleep") as pause,
         ):
-            receipt = client.act({"type": "wait"}, timeout=1)
+            receipt = client.act({"type": "key", "key": "A_SHORT_WAIT"}, timeout=1)
         self.assertEqual(receipt["dispatch"]["outcome"], "limit_reached")
         pause.assert_called_once()
         self.assertAlmostEqual(pause.call_args.args[0], 0.01)
@@ -339,5 +345,5 @@ class DispatchTests(unittest.TestCase):
         ):
             with self.subTest(policy=policy), patch.object(client, "request") as request:
                 with self.assertRaises(ValueError):
-                    client.act({"type": "wait"}, execution=policy)
+                    client.act({"type": "key", "key": "A_SHORT_WAIT"}, execution=policy)
                 request.assert_not_called()

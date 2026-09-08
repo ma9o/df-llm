@@ -1,72 +1,72 @@
--- Isolated Options geometry, text input and native data-root fixtures.
+-- Isolated native quicksave requests and file evidence; no real game inputs.
 local source=...
-local function vector(values)
-    local v={};for i,x in ipairs(values)do v[i-1]=x end
-    return setmetatable(v,{__len=function()return #values end})
-end
-local a={open=true,context=6,option=vector({1,2,7,9,3,0}),text={text=vector({})},
-    do_manual_save=false,manual_save_timer=0,entering_manual_folder=false,confirm_manual_overwrite=false,
-    entering_manual_str='',entering_timeline=false,doing_help=false}
-for _,f in ipairs({'fort_retirement_confirm','adv_retirement_confirm','fort_abandon_confirm',
-    'adv_abandon_confirm','fort_quit_without_saving_confirm','adv_quit_without_saving_confirm'})do a[f]=false end
-local supported,root_ok,modified=true,true,123
-local inputs={}
-local env=setmetatable({df={global={game={main_interface={options=a}}},
-    interface_key={SELECT=1,STRING_A000=707},options_context_type={[6]='MAIN_ADVENTURE'},
-    main_menu_option_type={[0]='RETURN',[1]='SAVE_AND_QUIT',[2]='SAVE_AND_CONTINUE',
-        [3]='SETTINGS',[7]='ABANDON_ADVENTURER',[9]='QUIT_WITHOUT_SAVING'}},
-    dfhack={filesystem={getBaseDir=function()return '/native-data/' end,
-        isdir=function(path)assert(path:sub(1,13)=='/native-data/');return root_ok end,
-        isfile=function(path)assert(path=='/native-data//save/night/world.sav');return true end,
-        mtime=function()return modified end},getSavePath=function()error('Stale install-relative save path')end}},
-    {__index=_ENV})
-local m=assert(load(source,'saving-fixture','t',env))({array=function()return {}end,text=function(s)return s end,
-    bindings={support=function()return {native_hotkey_available=supported}end,catalog=function(menu)return menu end,
-        fixed=function(entry,key)entry.selection={method='native_key',key=key}end},
-    input=function(key)
-        inputs[#inputs+1]=key
-        if key=='STRING_A000' then a.entering_manual_str=a.entering_manual_str:sub(1,-2)
-        else a.entering_manual_str=a.entering_manual_str..string.char(tonumber(key:match('(%d+)$'))) end
-    end})
 local names={}
 local function test(name,fn)local ok,err=pcall(fn);assert(ok,name..': '..tostring(err));names[#names+1]=name end
-test('options geometry uses native order and dimensions without text rows',function()
-    local menu=m.menu({width=180,height=77})
-    assert(menu.options[2].native_type=='SAVE_AND_CONTINUE' and menu.options[2].click.y==34)
-    assert(menu.options[2].click.x==89 and not menu.options[2].selection)
-    menu=m.menu({width=140,height=60})
-    assert(menu.options[2].click.x==69 and menu.options[2].click.y==26)
+local a={open=false,context=6,do_manual_save=false,manual_save_timer=0,entering_manual_folder=false,
+    confirm_manual_overwrite=false,entering_manual_str='',entering_timeline=false,doing_help=false,
+    adv_retirement_confirm=false,adv_abandon_confirm=false,adv_quit_without_saving_confirm=false}
+local function queue()return {count=7,resize=function(self,n)self.count=n end}end
+a.saver={stage=51,substage=51,info={nemesis_save_file_id=queue(),nemesis_member_idx=queue(),
+    units=queue(),cur_unit_chunk='old',cur_unit_chunk_num=9,units_offloaded=10}}
+local root_ok,loaded,exists,modified=true,true,false,123
+local input,screen={},{}
+local env=setmetatable({dfhack_flags={module=false},df={global={game={main_interface={options=a}},
+    adventure={menu=0,player_control_state=0}},viewscreen_dungeonmodest={is_instance=function(_,s)return s==screen end},
+    ui_advmode_menu={Default=0},adventure_game_loop_type={TAKING_INPUT=0},save_substage={Initializing=0},
+    options_context_type={MAIN_ADVENTURE=6,[6]='MAIN_ADVENTURE'}},
+    dfhack={isMapLoaded=function()return loaded end,world={isAdventureMode=function()return true end},
+        gui={getCurViewscreen=function()return screen end,getCurFocus=function()return {'dungeonmode/Default'}end},
+        filesystem={getBaseDir=function()return '/native-data/' end,
+            isdir=function(path)if path=='/native-data//save/' then return root_ok end;return exists end,
+            isfile=function(path)assert(path=='/native-data//save/night/world.sav');return exists end,
+            mtime=function()return modified end}}}, {__index=_ENV})
+local function reset()
+    a.open=false;a.do_manual_save=false;a.entering_manual_folder=false;a.confirm_manual_overwrite=false
+    a.entering_manual_str='';a.adv_abandon_confirm=false;input={}
+end
+local m=assert(load(source,'quicksave-fixture','t',env))({array=function()return {}end,text=function(s)return s end,
+    input=function(key)
+        input[#input+1]=key
+        if key=='OPTIONS' then a.open=true
+        elseif key=='SELECT' then
+            assert(a.entering_manual_folder and a.entering_manual_str=='night')
+            if exists then a.confirm_manual_overwrite=true else a.do_manual_save=true end
+        else error('Unexpected input '..key)end
+    end})
+test('quicksave stages the exact filename then delegates native validation without clicking or typing',function()
+    m.submit({name='night'})
+    assert(#input==2 and input[1]=='OPTIONS' and input[2]=='SELECT' and a.do_manual_save)
+    assert(a.manual_save_timer==0 and not exists) -- Only a request, not proof of a write.
 end)
-test('filename entry exposes native value and verifies backspace then exact replacement',function()
-    a.entering_manual_folder=true;a.entering_manual_str='old'
-    local menu=m.menu({width=180,height=77})
-    assert(menu.mode=='filename' and menu.filename=='old' and menu.options[1].selection.key=='SELECT')
-    m.edit('night',{width=180,height=77})
-    assert(a.entering_manual_str=='night' and #inputs==8 and inputs[1]=='STRING_A000')
-    a.entering_manual_folder=false
+test('an existing save blocks before opening any interface unless overwrite was delegated',function()
+    reset();exists=true
+    assert(not pcall(m.submit,{name='night'}));assert(#input==0 and not a.open)
+    m.submit({name='night',overwrite=true})
+    assert(a.do_manual_save and a.confirm_manual_overwrite and #input==2)
+    assert(a.manual_save_timer==5 and a.saver.stage==0 and a.saver.substage==0)
+    assert(a.saver.info.nemesis_save_file_id.count==0 and a.saver.info.nemesis_member_idx.count==0
+        and a.saver.info.units.count==0 and a.saver.info.cur_unit_chunk==nil
+        and a.saver.info.cur_unit_chunk_num==-1 and a.saver.info.units_offloaded==-1)
 end)
-test('overwrite phase has explicit native yes and cancel controls',function()
-    a.confirm_manual_overwrite=true
-    local menu=m.menu({width=180,height=77})
-    assert(menu.mode=='overwrite' and menu.filename=='night' and menu.options[1].native_type=='OVERWRITE')
-    assert(menu.options[1].click.x==64 and menu.options[1].click.y==41)
-    a.confirm_manual_overwrite=false
+test('unavailable world and unfinished native options cannot receive a save request',function()
+    reset();exists=false;loaded=false
+    assert(not pcall(m.submit,{name='night'}));assert(#input==0)
+    loaded=true;a.open=true
+    assert(not pcall(m.submit,{name='night'}));assert(#input==0)
+    reset();a.adv_abandon_confirm=true
+    assert(not pcall(m.submit,{name='night'}));assert(#input==1 and not a.do_manual_save)
 end)
 test('closed and saving phases do not inspect inactive option pointers',function()
-    local saved=a.option;a.option=setmetatable({},{__len=function()error('Inactive native options')end})
-    a.open=false;assert(m.menu({})==nil);a.open=true;a.do_manual_save=true
-    local menu=m.menu({width=180,height=77});assert(menu.mode=='saving' and #menu.options==0)
-    a.do_manual_save=false;a.option=saved
+    reset();a.option=setmetatable({},{__len=function()error('Inactive native options')end})
+    assert(m.menu()==nil);a.open=true;a.do_manual_save=true
+    local menu=m.menu();assert(menu.mode=='saving' and #menu.options==0)
 end)
-test('unknown build and undeclared confirmation cannot select or edit',function()
-    supported=false;assert(m.menu({width=180,height=77}).selection_unavailable)
-    assert(not pcall(m.edit,'night',{width=180,height=77}));supported=true
-    a.adv_abandon_confirm=true;assert(m.menu({width=180,height=77}).selection_unavailable);a.adv_abandon_confirm=false
-end)
-test('file evidence uses the native data root and reports failed reads explicitly',function()
+test('native data-root failures are unknown and reserved names never request input',function()
+    reset();exists=true
     local f=m.file('night');assert(f.available and f.world_exists and f.world_mtime=='123')
     root_ok=false;f=m.file('night');assert(not f.available and f.world_exists==nil);root_ok=true
     modified=-1;assert(not m.file('night').available);modified=123
-    for _,name in ipairs({'current','autosave 1','autosave 2','autosave 3','../save'})do assert(not pcall(m.file,name))end
+    for _,name in ipairs({'current','autosave 1','autosave 2','autosave 3','../save'})do assert(not pcall(m.submit,{name=name}))end
+    assert(#input==0)
 end)
 return {passed=#names,tests=names,game_inputs=0}

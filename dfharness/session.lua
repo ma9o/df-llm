@@ -1,8 +1,7 @@
 --@ module=true
 --luacheck: globals factory
-local function build(...)
+local function build()
 -- Harness-only state lifetime. No native pointers survive a request or reload.
-local checkpoints=...
 local M={}
 function M.open()
     local s=dfhack.df_llm_session or {serial=0,receipts={},order={}}
@@ -27,47 +26,35 @@ function M.open()
         local active=current.active_dispatch and current.dispatches[current.active_dispatch]
         if active then active.interrupted=true;active.world_changed=true end
         current.active_dispatch=nil;current.pending=nil
-        current.persistence=nil
         current.interrupt_requests={};current.interrupt_order={}
         -- Retain plain diagnostic records and monotonic choice serials. Changed
         -- scope prevents old handles from naming another world's option set.
         local choices=dfhack.df_llm_choices
         if choices then choices.entries={};choices.order={} end
     end
-    if checkpoints and dfhack.isWorldLoaded() then checkpoints.open(s)end
     return s
 end
 function M.lookup(session,id)
-    return checkpoints and checkpoints.lookup(session,id) or session.dispatches[id]
+    return session.dispatches[id]
 end
-function M.persist_begin(session,id,record,resume_id)
-    if not checkpoints or not dfhack.isWorldLoaded()then return true end
-    local ok,reason=checkpoints.begin(session,id,record,resume_id)
-    if not ok then
-        local prior=resume_id and session.dispatches[resume_id]
-        if prior and (prior.resume_guard or prior.persistent_resume_guard)then return false,reason end
-        record.checkpoint_unavailable=reason
+function M.describe(session,limit)
+    local rows=require('json.internal'):newArray{}
+    local total=#session.dispatch_order
+    for i=total,math.max(1,total-limit+1),-1 do
+        local id=session.dispatch_order[i]
+        local r=session.dispatches[id]
+        rows[#rows+1]={id=id,action=r.workflow and r.workflow.action.type,
+            outcome=r.dispatch and r.dispatch.outcome,active=session.active_dispatch==id,
+            resumed_by=r.resumed_by,world_changed=not M.matches(r,session)}
     end
-    return true
+    return {available=true,storage='memory; cleared on game restart',retention=128,
+        dispatches=rows,total=total,truncated=#rows<total,
+        resume='Same loaded world and adventurer only; reload revokes progress and choice handles'}
 end
-function M.persist_finish(session,id,record,view,receipt)
-    if checkpoints and M.matches(record,session) and dfhack.isWorldLoaded()then
-        return checkpoints.finish(session,id,record,view,receipt)
-    end
-end
-function M.describe(session,limit)return checkpoints.describe(session,limit)end
 function M.matches(record,session)
     return record.world_epoch~=nil and record.world_epoch==session.world_epoch
 end
-function M.resume_reason(record,session,status,checkpoint_guard)
-    if record.restored_epoch==session.world_epoch then
-        if record.restore_reason then return record.restore_reason end
-        if not record.resume_guard or record.resume_guard~=checkpoint_guard then
-            return 'Saved checkpoint does not match current native state; execution cannot be resumed after reload'
-        end
-        if record.adventurer_id~=status.adventurer_id then return 'Cannot resume as a different adventurer' end
-        return
-    end
+function M.resume_reason(record,session,status)
     if not M.matches(record,session) then return 'World changed; old dispatch progress cannot be resumed' end
     if record.adventurer_id~=status.adventurer_id then return 'Cannot resume as a different adventurer' end
     -- A native manual save changes the folder name while this world and actor

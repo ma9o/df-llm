@@ -81,6 +81,7 @@ test('declared dependency types preserve false and empty native text',function()
     save_panel.confirm_manual_overwrite=false
     env.df.interface_key.OPTIONS=0;env.df.interface_key.SELECT=1;env.df.interface_key.STRING_A000=707
     env.df.options_context_type={MAIN_ADVENTURE=0};env.df.main_menu_option_type={SAVE_AND_CONTINUE=2}
+    env.df.save_substage={Initializing=0}
     env.dfhack.filesystem={}
     for _,name in ipairs({'getBaseDir','isdir','isfile','mtime'})do env.dfhack.filesystem[name]=function()end end
     assert(m.capabilities().features.saving.dependencies_present)

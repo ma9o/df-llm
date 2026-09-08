@@ -43,6 +43,8 @@ def audit_logs(paths):
                         incomplete_lines += 1
                         continue
                     raise ValueError(f"Invalid JSONL at {path}:{number}: {exc.msg}") from exc
+                if isinstance(row, dict) and row.get("kind") == "controller_payload":
+                    continue
                 if (
                     not isinstance(row, dict)
                     or not isinstance(row.get("request"), dict)

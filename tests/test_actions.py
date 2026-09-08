@@ -10,6 +10,17 @@ from dfharness.workflows import validate_action
 
 
 class ActionReferenceTests(unittest.TestCase):
+    def test_sequence_references_are_local_and_expansion_uses_the_original_schema(self):
+        short = action_reference("sequence")
+        full = action_reference("sequence", expand=True)
+        children = short["schema"]["oneOf"][0]["properties"]["actions"]["items"]["oneOf"]
+        self.assertTrue(any(row["$ref"] == "dfctl:actions/move" for row in children))
+        for row in children:
+            self.assertIn("schema", action_reference(row["$ref"].split("/")[-1]))
+        original = next(a for a in ACTIONS if a["properties"]["type"]["const"] == "sequence")
+        self.assertEqual(full["schema"]["oneOf"], [original])
+        self.assertLess(len(json.dumps(short)), len(json.dumps(full)) / 2)
+
     def test_cli_and_python_share_exact_schemas_without_game_reads(self):
         client = Client(port=1)
         with patch.object(client, "request", side_effect=AssertionError("Reference must be local")):

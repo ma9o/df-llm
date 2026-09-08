@@ -12,6 +12,9 @@ from .selection import next_selection, selection_input
 from .state import all_items, contained_state, inventory, inventory_complete, item_value
 
 SEMANTIC = {
+    "trade",
+    "move",
+    "wait",
     "pickup",
     "equip",
     "wield",
@@ -41,10 +44,10 @@ SEMANTIC = {
     "rest",
     "save_game",
     "empty_container",
+    "open_trade",
+    "close_trade",
 }
 PRIMITIVES = {
-    "move",
-    "wait",
     "dismiss",
     "resume",
     "action_prompt",
@@ -76,6 +79,21 @@ def validate_action(action):
     if not isinstance(action, dict) or action.get("type") not in SEMANTIC | PRIMITIVES:
         raise ValueError("Unknown action type")
     kind = action["type"]
+    if kind == "trade":
+        from .exchange import validate_trade
+
+        validate_trade(action)
+        return
+    if kind in ("open_trade", "close_trade"):
+        from .barter import validate_barter
+
+        validate_barter(action)
+        return
+    if kind in ("move", "wait"):
+        from .locomotion import validate
+
+        validate(action)
+        return
     if kind == "strike":
         from .strike import validate_strike
 
@@ -150,8 +168,6 @@ def validate_action(action):
         return
     if kind not in SEMANTIC:
         required, optional = {
-            "move": ({"direction"}, set()),
-            "wait": (set(), set()),
             "dismiss": (set(), set()),
             "resume": (set(), {"dispatch_id"}),
             "action_prompt": ({"choice"}, set()),
@@ -172,19 +188,6 @@ def validate_action(action):
                     raise ValueError(field + " must be a nonnegative integer")
             elif not isinstance(value, str) or not value:
                 raise ValueError(field + " must be a nonempty string")
-        if kind == "move" and action["direction"] not in (
-            "n",
-            "s",
-            "e",
-            "w",
-            "ne",
-            "nw",
-            "se",
-            "sw",
-            "up",
-            "down",
-        ):
-            raise ValueError("Invalid movement direction")
         if kind == "action_prompt" and action["choice"] not in ("continue", "stop", "finish"):
             raise ValueError("Invalid action prompt choice")
         if kind == "click" and action.get("button", "left") not in ("left", "right", "middle"):
@@ -598,6 +601,24 @@ def site_travel_step(grid, p, target, radius):
     return min(exits, key=lambda e: (e[0], e[1]))[2] if exits else None
 
 
+def travel_facts(action, travel, pending=None):
+    fields = ("position", "site_zoom", "not_moved", "exception", "map_view")
+    facts = {k: deepcopy(travel[k]) for k in fields if k in travel}
+    missing = [k for k in fields if k not in travel]
+    if missing:
+        facts["unavailable"] = missing
+    if action["type"] == "travel_to":
+        facts["destination"] = {k: action[k] for k in ("x", "y")}
+        facts["arrival_radius"] = action.get("arrival_radius", 0)
+    if pending:
+        facts["attempt"] = {
+            k: deepcopy(pending[k])
+            for k in ("position", "direction", "expected", "site_zoom")
+            if k in pending
+        }
+    return {"blocker_kind": "travel_progress", "facts": facts}
+
+
 def next_travel(workflow, view):
     action, ctx = workflow["action"], workflow.setdefault("context", {})
     travel = view["status"].get("travel")
@@ -611,7 +632,11 @@ def next_travel(workflow, view):
                 "needs_input", "Travel is closed but the local adventurer is unavailable."
             )
         if ctx.get("end_sent"):
-            return result("no_effect", "Travel did not close; input was not repeated.")
+            return result(
+                "no_effect",
+                "Travel did not close; input was not repeated.",
+                travel_facts(action, travel),
+            )
         ctx["end_sent"] = True
         return {"input": {"type": "key", "key": "A_END_TRAVEL"}}
     if not travel.get("active"):
@@ -619,7 +644,7 @@ def next_travel(workflow, view):
             return result(
                 "needs_input",
                 "Travel ended before arrival; assess the current local state before starting another trip.",
-                travel,
+                travel_facts(action, travel),
             )
         if not view["status"].get("can_move"):
             return result("needs_input", "Close the current interface before starting travel.")
@@ -629,7 +654,9 @@ def next_travel(workflow, view):
     p = travel.get("position")
     if not p or p.get("z") != 0:
         return result(
-            "needs_input", "This travel recipe requires a known surface travel position.", travel
+            "needs_input",
+            "This travel recipe requires a known surface travel position.",
+            travel_facts(action, travel),
         )
     bounds = travel.get("world_size", {})
     if any(action[k] >= bounds.get(k, 0) for k in ("x", "y")):
@@ -639,18 +666,20 @@ def next_travel(workflow, view):
         return result(
             "completed", "Arrival verified in travel coordinates; travel mode remains open."
         )
-    pending = ctx.pop("travel_pending", None)
+    # A failed verifier still owns the last input. Resume may observe a late
+    # effect, but must not turn the same unchanged position into another move.
+    pending = ctx.get("travel_pending")
     if pending and p == pending["position"]:
         return result(
             "no_effect",
-            "Travel did not advance. Supply another waypoint after inspecting the map or blocker.",
-            travel,
+            "Travel did not advance; the previous input was not repeated.",
+            travel_facts(action, travel, pending),
         )
     if pending and pending.get("expected") and p != pending["expected"]:
         return result(
             "needs_input",
             "The site travel step reached different coordinates than expected.",
-            travel,
+            travel_facts(action, travel, pending),
         )
     if pending and not pending.get("expected") and distance >= pending["distance"]:
         return result(
@@ -698,6 +727,7 @@ def next_travel(workflow, view):
             "position": deepcopy(p),
             "distance": distance,
             "expected": {"x": p["x"] + dx, "y": p["y"] + dy, "z": p["z"]},
+            "direction": direction,
         }
         return {"input": {"type": "key", "key": "A_MOVE_" + direction.upper()}}
     dx, dy = action["x"] - p["x"], action["y"] - p["y"]
@@ -728,6 +758,7 @@ def next_travel(workflow, view):
         "position": deepcopy(p),
         "distance": distance,
         "site_zoom": travel.get("site_zoom"),
+        "direction": direction,
     }
     return {"input": {"type": "key", "key": "A_MOVE_" + direction}}
 
@@ -768,10 +799,22 @@ def close_travel_map(workflow, view):
 def next_step(workflow, view):
     action, ctx = workflow["action"], workflow.setdefault("context", {})
     kind = action["type"]
+    if kind == "trade":
+        from .exchange import next_trade
+
+        return next_trade(workflow, view)
     if kind in SEMANTIC:
         prerequisite = close_travel_map(workflow, view)
         if prerequisite is not None:
             return prerequisite
+    if kind in ("move", "wait"):
+        from .locomotion import next_locomotion
+
+        return next_locomotion(workflow, view)
+    if kind in ("open_trade", "close_trade"):
+        from .barter import next_barter
+
+        return next_barter(workflow, view)
     if kind == "empty_container":
         from .storage import next_empty
 

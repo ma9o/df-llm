@@ -1,154 +1,78 @@
 # Measuring interactivity
 
-The measurement layer records the cost of controller interactions without
-changing their payloads, execution policies or game inputs. It is off by default.
-Failures to count tokens or append a log do not retry an action or turn a
-successful query into an error. Diagnostics go to stderr, separately from CLI response output.
+Recording is passive and off by default. Ordinary CLI/Python calls record operation,
+episode, outcome, timing, bytes, target IDs and correlated RPC costs. They never
+import a tokenizer. Logging failures do not change results or retry game inputs.
 
-## Recording and episode identity
+## Record
 
 ```sh
-./dfctl metrics --prepare-tokenizer o200k_base
-./dfctl settings --set '{"measurement":{"enabled":true,"path":"metrics.jsonl","run":"baseline","episode":"drop-backpack-and-strike-1"}}'
-./dfctl look
+./dfctl --metrics .df-llm/current.jsonl --metrics-run current --episode room-1 look
+./dfctl settings --set '{"measurement":{"enabled":true,"path":"metrics.jsonl","run":"current"}}'
 ```
 
-Saved measurement settings refresh across CLI processes and existing Python
-clients. `path` defaults to `metrics.jsonl` beside the controller settings file;
-relative saved paths resolve there. `run` names a controller session/comparison
-cohort. `episode` identifies one instruction within that run. Use a unique label
-per instruction, within one game/world, and a separate run for each controller.
-Explicit labels retain their names but split into numbered segments at idle gaps
-or intervening label changes. Clear the label using
-`{"measurement":{"episode":null}}` for inferred episodes.
+Settings accept `enabled`, `path`, `run` and `episode`. Relative saved paths resolve
+beside the settings file. Overrides: `--metrics PATH` / `DFLLM_METRICS=PATH`,
+`--no-metrics` / `DFLLM_METRICS=off`, `--metrics-run` / `DFLLM_METRICS_RUN`, and
+`--episode` / `DFLLM_EPISODE`. Python uses `metrics_path`, `metrics_run` and
+`metrics_episode` on `Client`. Explicit arguments override environment and settings.
+Legacy saved tokenizer settings are ignored; tokenization is offline.
 
-| Setting | Process override | Python constructor |
-|---|---|---|
-| `enabled`, `path` | `--metrics PATH`, `DFLLM_METRICS=PATH` | `metrics_path=Path(...)` |
-| Disable | `--no-metrics`, `DFLLM_METRICS=off` | `metrics_path=False` |
-| `run` | `--metrics-run LABEL`, `DFLLM_METRICS_RUN` | `metrics_run="baseline"` |
-| `episode` | `--episode LABEL`, `DFLLM_EPISODE` | `metrics_episode="fight-1"` |
-| `tokenizer` | `--tokenizer NAME` | `tokenizer="o200k_base"` |
+Use one run per controller and one episode label per instruction. Explicit labels
+also split at idle gaps (120 seconds by default) and retain numbered segments.
+Clear a saved episode with `{"measurement":{"episode":null}}` for idle grouping.
 
-Explicit process/constructor values override environment, then saved settings.
-An explicit path enables recording without changing saved settings. Disable
-saved recording with `{"measurement":{"enabled":false}}`.
-
-Python controllers can set the episode through `Client.settings`:
-
-```python
-game.settings(update={"measurement": {"enabled": True, "run": "baseline", "episode": "room-1"}})
-```
-
-That settings call itself starts under the previous configuration; subsequent
-calls use the new label. The measurement report is an offline CLI operation;
-it adds no controller tools or gameplay round trips.
-
-## Local tokenizer preparation
-
-Preparation uses the installed tiktoken encoding definitions and their verified
-asset downloads. It saves constructor data locally, without copying a model's
-token patterns into the harness. Runtime counting constructs `tiktoken.Encoding`
-from that file and never calls the library's downloading registry. Files live
-under `~/.cache/df-llm/tokenizers`, overridable with `DFLLM_TOKENIZER_DIR`.
-After changing tiktoken versions, explicitly prepare the encoding again.
-
-Missing/corrupt data leaves token counts null, with a counted failure; byte and
-duration measurements still work. No approximate character-to-token ratio is
-substituted. CLI processes still pay local tokenizer loading cost, recorded as
-`measurement_ms`. A persistent Python client caches the encoding in memory.
-Encoding and package versions are retained for comparisons.
-
-## What is measured
-
-Each outer controller call has one `interaction` record; its nested native calls
-have `rpc` records with the same `trace_id`. Python aliases and the methods used
-inside a dispatch do not become additional controller calls. An optional full
-`--log` trace includes that trace ID for diagnosis; measurement logs store no
-payload text. Bounded action types, numeric target IDs/coordinates, sequence
-intents, dispatch/resume IDs, outcomes and error codes support episode analysis.
-
-| Field | Boundary |
-|---|---|
-| Input bytes/tokens | Canonical Python arguments or CLI argv plus stdin |
-| Output bytes/tokens | Canonical Python return JSON or actual CLI output |
-| `duration_ms` | Monotonic time to response production, including CLI output flush |
-| `measurement_ms` | Final serialization/token counting, including a cold local encoding load; excludes the JSONL append |
-| `at`, `finished_at` | Start and end of the measured interval, including token counting |
-| `rpc_calls`, `rpc_ms` | Native calls beneath the interaction, including readiness polls and failures |
-| RPC bytes | Lua request source and command output, excluding protobuf framing |
-
-No internal RPC token counts are added to controller tokens. Errors with a CLI
-response measure that response; a Python exception without a returned
-payload has unknown output tokens. Trace records can remain without a finished
-interaction if a process is terminated. Reports count these unfinished traces.
-
-These are payload counts under the selected encoding, not provider input/output
-usage. Model prompts, reasoning, source-file reads, tool wrappers, and other
-applications are outside this boundary. Python excludes client construction;
-CLI excludes interpreter/import startup. Setup, raw development commands,
-offline reports and CLI parse errors do not create interaction records.
-
-## Episode reports
+## Analyze and count tokens offline
 
 ```sh
 ./dfctl metrics .df-llm/current.jsonl --text
-./dfctl metrics .df-llm/current.jsonl --run current --idle-gap 120
 ./dfctl metrics .df-llm/current.jsonl --baseline .df-llm/baseline.jsonl --text
 ```
 
-A gap of more than `--idle-gap` seconds between measured intervals starts a new
-episode segment within that run, including calls with an explicit label. Default:
-120 seconds. A label change also starts a segment. Reports preserve explicit labels
-and number their segments, so reusing a label after development does not charge
-the pause to active play. Long deliberation can also split an instruction; gaps
-are a documented heuristic, not measured thinking time. Several short unlabeled
-instructions can merge. Historical timestamps cannot reconstruct instruction identity.
+Metrics logs contain no payload text, so new token counts remain unknown until
+paired with an explicitly captured full log:
 
-The wall interval spans the first recorded start through the last measured
-finish. Harness time is the union of measured intervals, so overlapping calls
-are not added twice. Child RPC times are already inside those intervals. Gap
-time is the remainder: time outside the measured harness, including controller
-deliberation, other tools, scheduling and human pauses. It is not a measurement
-of LLM thinking. Unseen time before the first call and after the last call is
-not included. Old records infer finish from duration plus tokenizer overhead;
-missing or inconsistent timestamps are counted as ungroupable calls. Summed
-episode wall times are per-objective costs, not a deduplicated session wall clock.
+```sh
+./dfctl --metrics .df-llm/current.jsonl --log .df-llm/payloads.jsonl look
+# Explicit setup only; may download. tiktoken is in the optional analysis extra.
+./dfctl metrics --prepare-tokenizer o200k_base
+./dfctl metrics .df-llm/current.jsonl .df-llm/payloads.jsonl --tokenizer o200k_base --text
+```
 
-Follow-up reads are observation calls after a dispatch's response and before
-the next dispatch. Reports pair their count and tokens with the preceding
-receipt's output tokens. Reads while a dispatch is running are excluded;
-trailing reads are separate open windows. Intentional observation also counts,
-so this is a signal to inspect receipt adequacy rather than proof of a defect.
-`actions` and `capabilities` counts provide a separate discovery/relearning proxy.
+Install the `analysis` extra for an installed package (`pip install 'df-llm[analysis]'`).
+Repository development dependencies already include it. Preparation stores verified
+encoding data under `~/.cache/df-llm/tokenizers` (`DFLLM_TOKENIZER_DIR` overrides).
+Offline analysis never downloads missing data. Historical counts keep their named
+encoding; uncaptured or missing responses stay unknown, not zero or estimated.
+`--log` includes full native traces plus controller input/output; `audit-log` ignores
+the controller rows. Matching trace IDs deduplicate metrics and captured payloads.
 
-A bounce is a non-completed targeted dispatch followed by the same action type
-and native target in that episode, including a reissue inside a sequence.
-Sequence blockers identify the active objective, not completed stages. Weapon
-and strike style changes do not change the attacked creature's identity.
-Explicit resumes and same-dispatch redeliveries are counted separately. A
-same-target retry is a diagnostic proxy, not proof of a prerequisite bug or an
-unnecessary action. No new actions or reads are issued to establish a match.
+## Boundaries and interpretation
 
-Historical records from the removed MCP adapter remain readable, including
-its `df_` operation names and original surface/output format.
+| Field | Meaning |
+|---|---|
+| `input_bytes`, `output_bytes` | Canonical Python arguments/return JSON, or CLI argv plus stdin and actual output |
+| `duration_ms` | Monotonic response time through CLI flush; excludes process/import startup |
+| `measurement_ms` | Final serialization, excluding file append; older records also include tokenizer load |
+| `rpc_calls`, `rpc_ms` | All nested native calls, including polls and failures |
+| `at`, `finished_at` | Controller interaction interval; Python excludes client construction |
 
-The bounce-rate denominator contains assessable non-completed calls with a
-later dispatch. Unknown target metadata, ambiguous legacy follow-ups,
-overlapping calls and open tails are counted separately. Old records contain
-action types but no targets, so their same-target bounce rate is unavailable.
-Targetless actions do not establish a targeted bounce. Token totals remain
-separate by encoding, with known sums and unmeasured counts.
+One outer call produces one interaction; internal helpers are not extra controller
+calls. Exact token counts describe those payloads under a named encoding, not provider
+billing, reasoning, prompts, tool wrappers or source-file reads. Native RPC bytes
+are transport costs and are never counted as LLM tokens.
 
-Baseline comparisons show per-call means for matching surfaces, operations,
-action types, output formats and encodings, plus per-episode costs, read rates
-and bounce rates. These are descriptive comparisons: use equivalent
-instructions, settings and grouping thresholds. Lower token counts alone do
-not prove an improvement. Sample counts, outcome mix and coverage remain visible.
+Episode reports separate harness time from gaps. Harness time unions overlapping
+intervals; RPC time is already included. Gaps include human pauses, other tools,
+scheduling and deliberation, so they are not proven LLM thinking time. Time before
+the first call and after the last response is unobserved. `--idle-gap SECONDS`
+controls grouping; long deliberation may split an instruction.
 
-## Verification
+Pair output tokens with follow-up reads per dispatch. The report counts observations
+between acts, trailing read windows, discovery calls and same-target reissues.
+Resumes and duplicate dispatch IDs are separate from bounces. Missing targets,
+overlapping calls and unfinished tails remain explicit. These are review signals:
+an intentional observation or retry is not automatically a defect. Compare equivalent
+objectives and outcome mixes, not bytes alone.
 
-`uv run python -m tests.run tests.test_metrics tests.test_metrics_report -v`
-covers CLI and Python boundaries, correlated native calls and errors,
-passive failure isolation, concurrent appends, offline tokenization, timing
-overlaps, legacy records, follow-up reads, bounces/resumes and comparisons.
+Tests: `uv run --locked python -m tests.run tests.test_metrics tests.test_metrics_report`.

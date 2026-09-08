@@ -146,23 +146,28 @@ wheels = [
 name = "df-llm"
 version = "0.27.0"
 source = { editable = "." }
-dependencies = [
+
+[package.optional-dependencies]
+analysis = [
     { name = "tiktoken" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "ruff" },
+    { name = "tiktoken" },
     { name = "ty" },
     { name = "vulture" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "tiktoken", specifier = ">=0.12,<1" }]
+requires-dist = [{ name = "tiktoken", marker = "extra == 'analysis'", specifier = ">=0.12,<1" }]
+provides-extras = ["analysis"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "ruff", specifier = ">=0.16.6,<0.17" },
+    { name = "tiktoken", specifier = ">=0.12,<1" },
     { name = "ty", specifier = ">=0.0.78,<0.1" },
     { name = "vulture", specifier = ">=2.14,<3" },
 ]

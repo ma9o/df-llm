@@ -14,28 +14,28 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from threading import Lock
 
-from .metrics_tokens import tokenizer
-
 DEFAULTS = {
     "enabled": False,
     "path": None,
     "run": "default",
     "episode": None,
-    "tokenizer": "o200k_base",
 }
 
 
 def configuration(current, update):
+    # Old profiles selected a runtime tokenizer. Counts now run offline only.
+    if isinstance(update, dict):
+        update = {k: v for k, v in update.items() if k != "tokenizer"}
     if not isinstance(update, dict) or update.keys() - DEFAULTS.keys():
-        raise ValueError("measurement accepts enabled, path, run, episode and tokenizer")
-    result = {**DEFAULTS, **current, **update}
+        raise ValueError("measurement accepts enabled, path, run and episode")
+    result = {**DEFAULTS, **{k: v for k, v in current.items() if k in DEFAULTS}, **update}
     if type(result["enabled"]) is not bool:
         raise ValueError("measurement.enabled must be boolean")
     if result["path"] is not None and (
         not isinstance(result["path"], str) or not result["path"] or "\0" in result["path"]
     ):
         raise ValueError("measurement.path must be a nonempty path or null")
-    for key in ("run", "tokenizer", "episode"):
+    for key in ("run", "episode"):
         value = result[key]
         if key == "episode" and value is None:
             continue
@@ -60,6 +60,8 @@ def intent(action):
     # A weapon is a means; the creature is the target of a strike.
     if type(action.get("unit_id")) is int:
         target = {"unit_id": action["unit_id"]}
+        if type(action.get("shop_id")) is int:
+            target["shop_id"] = action["shop_id"]
     elif isinstance(action.get("unit_ids"), list):
         ids = action["unit_ids"]
         if 0 < len(ids) <= 32 and all(type(unit) is int for unit in ids):
@@ -140,7 +142,7 @@ class Span:
                 self.fields["blocked_intent"] = identity
 
     def respond(self, value, *, text=False):
-        if self.recorder.path is None:
+        if self.recorder.path is None and self.recorder.payload_path is None:
             return
         try:
             self.output = value if text else serialize(value)
@@ -161,9 +163,10 @@ CURRENT: ContextVar[Span | None] = ContextVar("dfharness_measurement", default=N
 
 
 class Recorder:
-    def __init__(self, path=None, *, run="default", episode=None, encoding="o200k_base"):
+    def __init__(self, path=None, *, run="default", episode=None, payload_path=None):
         self.path = Path(path).expanduser() if path else None
-        self.run, self.encoding = run, encoding
+        self.payload_path = Path(payload_path).expanduser() if payload_path else None
+        self.run = run
         self.episode = episode
         self.lock = Lock()
         self.failed = False
@@ -176,14 +179,15 @@ class Recorder:
             with suppress(OSError, ValueError):
                 print(f"df-llm measurement {kind}: {exc}", file=sys.stderr)
 
-    def write(self, row):
-        if self.path is None or self.failed:
+    def write(self, row, *, path=None):
+        path = path or self.path
+        if path is None or self.failed:
             return
         try:
             payload = (serialize(row) + "\n").encode("utf-8")
             with self.lock:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
                 try:
                     if os.write(fd, payload) != len(payload):
                         raise OSError("Incomplete measurement append")
@@ -219,7 +223,7 @@ class Recorder:
         finally:
             elapsed = (time.perf_counter_ns() - span.started_ns) / 1e6
             CURRENT.reset(context)
-            if self.path is not None and not self.failed:
+            if (self.path is not None or self.payload_path is not None) and not self.failed:
                 self.finish(span, elapsed)
 
     def finish(self, span, duration):
@@ -238,25 +242,20 @@ class Recorder:
                 "output_bytes": len(span.output.encode("utf-8")) if span.output_present else None,
                 "input_tokens": None,
                 "output_tokens": None,
-                "tokenizer": self.encoding,
                 "rpc_calls": span.rpc_calls,
                 "rpc_ms": round(span.rpc_ms, 3),
                 **span.fields,
             }
-            try:
-                encoder = tokenizer(self.encoding)
-                row["input_tokens"] = len(encoder.encode_ordinary(request))
-                if span.output_present:
-                    row["output_tokens"] = len(encoder.encode_ordinary(span.output))
-                row["tokenizer_version"] = version("tiktoken")
-            except Exception as exc:  # noqa: BLE001 -- unknown counts must not block gameplay.
-                row["token_error"] = type(exc).__name__
-                self.warn("token counts unavailable", exc)
             row["measurement_ms"] = round((time.perf_counter_ns() - started) / 1e6, 3)
             row["finished_at"] = (
                 span.at + timedelta(milliseconds=duration + row["measurement_ms"])
             ).isoformat()
             self.write(row)
+            if self.payload_path is not None:
+                self.write(
+                    {**row, "kind": "controller_payload", "input": request, "output": span.output},
+                    path=self.payload_path,
+                )
         except Exception as exc:  # noqa: BLE001 -- even serialization failure is passive.
             self.warn("record unavailable", exc)
 
@@ -284,7 +283,7 @@ class Recorder:
             raise
         finally:
             duration = (time.perf_counter_ns() - started) / 1e6
-            if parent is not None and self.path is not None:
+            if parent is not None:
                 parent.rpc_calls += 1
                 parent.rpc_ms += duration
                 self.write(

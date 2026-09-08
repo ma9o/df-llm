@@ -5,6 +5,11 @@ from copy import deepcopy
 from .workflows import SEMANTIC
 
 ACTION_HELP = {
+    "trade": "Submit an exact replacement offer in the open merchant catalog: take/give entries have item_id and amount; offer_currency/request_currency use native currency units. Validates selections and a unique character-layer Trade button before input, then verifies item quantities and the player's currency. Native counteroffers return to the controller. Sale items must be held separately (remove equipped/contained items first); containers are unsupported.",
+    "open_trade": "Approach unit_id, request Trade, select the explicit loaded Shop zone shop_id, and verify DF's rebuilt catalog. Preserves pending offers. Does not purchase or sell anything; use barter for a filtered goods query.",
+    "close_trade": "Close the native trade interface without submitting a transaction.",
+    "move": "Move to the adjacent tile in direction; verifies the native position. Composable in sequence. Uses the native path command where available; game refusals remain blockers.",
+    "wait": "One native short wait; verifies time advanced and input settled. Composable in sequence. Use rest for a longer duration.",
     "walk_to": "Submit a native path goal and verify the requested position or arrival_radius. DF computes the route. Step/complete, interruption and resume share the dispatch policy. Explicit tile/depth/occupancy constraints retain the constrained route adapter.",
     "drop": "Drop the specified item, removing it first if worn. Container contents stay inside. Returns location, contents integrity, cached load and burden from unit state.",
     "stow": "Place the item in container_id, removing it first if worn. Returns destination, contents integrity, cached load and burden from unit state.",
@@ -16,7 +21,7 @@ ACTION_HELP = {
     "combat": "Open the target's native combat choices. This is discovery/navigation; use strike to execute a complete aimed attack.",
     "sequence": "Execute explicit semantic actions in order under one completion policy, interruption policy and budget. Resume preserves completed stages. Item prerequisites are handled inside their stages.",
     "converse": "Visit explicit unit_ids, ask explicit topics and collect replies. A topic may include tact and subject_hf_id. Return only when completed or an undelegated choice is needed.",
-    "save_game": "Save and continue under the specified name. Verifies the named world.sav was written and the game is ready again. Existing folders require overwrite=true; current and native autosave names are reserved.",
+    "save_game": "Save and continue through the adventure DFHack quicksave helper in one native request. Verifies the named world.sav was written and the game is ready again. Existing folders require overwrite=true; current and native autosave names are reserved.",
 }
 
 
@@ -39,6 +44,34 @@ ROUTE = {
     "blocked_tiles": {"type": "array", "items": POSITION, "maxItems": 500},
 }
 ACTIONS = [
+    obj(
+        {
+            "type": {"const": "trade"},
+            "unit_id": COORD,
+            **{
+                side: {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": obj(
+                        {
+                            "item_id": COORD,
+                            "amount": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+                        },
+                        ("item_id", "amount"),
+                    ),
+                }
+                for side in ("take", "give")
+            },
+            "offer_currency": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+            "request_currency": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        },
+        ("type", "unit_id", "take", "give"),
+    ),
+    obj(
+        {"type": {"const": "open_trade"}, "unit_id": COORD, "shop_id": COORD},
+        ("type", "unit_id", "shop_id"),
+    ),
+    obj({"type": {"const": "close_trade"}}, ("type",)),
     *[
         obj(
             {"type": {"const": name}, "hours": {"type": "integer", "minimum": 1, "maximum": 24}},
@@ -294,7 +327,7 @@ for definition in ACTIONS:
         definition["description"] = note
 
 
-def action_reference(name=None):
+def action_reference(name=None, *, expand=False):
     """No game connection or separate copy of the action field schema."""
     allowed = SEMANTIC | {"resume", "wait", "move", "select_option", "select_interaction"}
     selected = [a for a in ACTIONS if a["properties"]["type"]["const"] in allowed]
@@ -302,10 +335,22 @@ def action_reference(name=None):
         variants = [a for a in selected if a["properties"]["type"]["const"] == name]
         if not variants:
             raise ValueError("Unknown controller action: " + name)
+        schema = {"oneOf": deepcopy(variants)}
+        references = {}
+        if name == "sequence" and not expand:
+            children = schema["oneOf"][0]["properties"]["actions"]["items"]["oneOf"]
+            names = sorted({child["properties"]["type"]["const"] for child in children})
+            schema["oneOf"][0]["properties"]["actions"]["items"] = {
+                "oneOf": [{"$ref": "dfctl:actions/" + child} for child in names]
+            }
+            references = {
+                "schema_references": "Resolve dfctl:actions/NAME with dfctl actions NAME; --expand returns the self-contained shared schema."
+            }
         return {
             "action": name,
             "description": ACTION_HELP.get(name, "See schema and runtime capabilities."),
-            "schema": {"oneOf": deepcopy(variants)},
+            "schema": schema,
+            **references,
             "execution": "Use saved settings or override mode=complete/step, acknowledge and interrupt_on. Availability: capabilities.",
         }
     rows = []

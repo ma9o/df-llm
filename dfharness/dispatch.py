@@ -45,6 +45,9 @@ def run_dispatch(
     execution=None,
     result_format="compact",
     event_detail="task",
+    *,
+    after=None,
+    since=None,
 ):
     validate_action(action)
     policy = execution_policy(client.execution, execution)
@@ -73,8 +76,11 @@ def run_dispatch(
         }
         return {
             **observation_args(current),
+            **({"receipt_state": True, "scene_reports": True} if after else {}),
             **watch_options(policy),
             "character_progress": True,
+            "navigation_grid": result_format == "full"
+            or bool(leaf and leaf["action"]["type"] == "travel_to"),
             "ui_mode": "full" if raw_ui or result_format == "full" else "native",
         }
 
@@ -113,9 +119,17 @@ def run_dispatch(
             },
         }
         # No lease/checkpoint was created, so there is nothing to interrupt or resume.
-        return view if result_format == "full" else compact_result(view, view, event_detail)
+        result = view if result_format == "full" else compact_result(view, view, event_detail)
+        if after:
+            result["after"] = client._after_scene(
+                view, event_detail, policy["interrupt_on"].get("report_types", []), since
+            )
+        return result
     if start.get("duplicate") and result_format == "compact" and start.get("compact"):
-        return dict(start["compact"], replayed=True)
+        result = dict(start["compact"], replayed=True)
+        if after:
+            result["after"] = client.observe(view="concise", event_detail=event_detail, since=since)
+        return result
     view = start["view"]
     before = deepcopy(view)
     if start.get("duplicate"):
@@ -137,7 +151,10 @@ def run_dispatch(
             }
         )
         view["dispatch_replayed"] = True
-        return view if result_format == "full" else compact_result(view, before, event_detail)
+        result = view if result_format == "full" else compact_result(view, before, event_detail)
+        if after:
+            result["after"] = client.observe(view="concise", event_detail=event_detail, since=since)
+        return result
     workflow = start["workflow"]
     saved = Checkpoint(workflow, start.get("workflow_revision"))
     view_ref = start.get("view_ref")
@@ -195,7 +212,9 @@ def run_dispatch(
 
     def finish(outcome, reason, next_action=None, details: dict[str, Any] | None = None):
         nonlocal view, view_ref, pending_read
-        if pending_read:
+        if pending_read or (
+            after and (read_args.get("route_target") or read_args.get("target_unit_id"))
+        ):
             # Observers can stop execution on a narrow processing sample. Final
             # records need a complete snapshot, retained by the same wire peer.
             # A standalone observe would discard its revision and send the
@@ -207,6 +226,11 @@ def run_dispatch(
                 "pending_reads": False,
                 "reports_after": max(events, default=cursor),
                 **read_options(workflow),
+                **(
+                    {"map_fixed": True, "map": True, "width": 41, "height": 21, "radius": 20}
+                    if after
+                    else {}
+                ),
                 **({"action_id": last_action} if last_action else {}),
                 **({"view_ref": view_ref} if view_ref is not None else {}),
             }
@@ -286,6 +310,12 @@ def run_dispatch(
             receipt_cursor,
             reported_value_stage,
         )
+        if after:
+            final_scene = client._after_scene(
+                view, event_detail, policy["interrupt_on"].get("report_types", []), since
+            )
+            compact["after"] = final_scene
+            # Avoid persisting a second observation inside the native full snapshot.
         value_stage = objective_values(summary, reported_value_stage)[1]
         if value_stage >= 0:
             workflow["reported_value_stage"] = value_stage
@@ -312,10 +342,13 @@ def run_dispatch(
             }
         stored = send(receipt)
         saved.accepted(workflow, stored)
-        if stored.get("checkpoint_unavailable"):
-            summary["checkpoint_unavailable"] = stored["checkpoint_unavailable"]
-            compact["checkpoint_unavailable"] = stored["checkpoint_unavailable"]
-        return view if result_format == "full" else compact
+        return (
+            dict(view, after=compact["after"])
+            if after and result_format == "full"
+            else view
+            if result_format == "full"
+            else compact
+        )
 
     while True:
         # Poll also checks an external interruption flag. No core suspension is

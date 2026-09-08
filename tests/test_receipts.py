@@ -27,14 +27,14 @@ def receipt(view, outcome="completed", action=None, events=(), details=None):
     view["dispatch"] = {
         "id": "receipt-1",
         "outcome": outcome,
-        "action": action or {"type": "wait"},
+        "action": action or {"type": "key", "key": "A_SHORT_WAIT"},
         "execution": {"mode": "complete", "acknowledge": True},
         "reason": "Verified postcondition"
         if outcome == "completed"
         else "A further choice is required",
         "events": list(events),
         "prompts": [],
-        "steps": [{"action": {"type": "wait"}}],
+        "steps": [{"action": {"type": "key", "key": "A_SHORT_WAIT"}}],
         "details": details or {},
     }
     if outcome != "completed":
@@ -426,13 +426,13 @@ class ReceiptTests(unittest.TestCase):
         bridge = Bridge(before, [after])
         client = Client(port=1, execution={"mode": "complete"})
         with patch.object(client, "request", side_effect=bridge):
-            result = client.act({"type": "wait"}, request_id="saved")
+            result = client.act({"type": "key", "key": "A_SHORT_WAIT"}, request_id="saved")
             bridge.view = scene("later", blood=20)
             cursor = len(bridge.calls)
             details = client.dispatch_details("saved")
             self.assertEqual([c["op"] for c in bridge.calls[cursor:]], ["dispatch_details"])
             self.assertEqual(details["value"][0]["text"], "Nearby rumor")
-            again = client.act({"type": "wait"}, request_id="saved")
+            again = client.act({"type": "key", "key": "A_SHORT_WAIT"}, request_id="saved")
             self.assertEqual(again, dict(result, replayed=True))
             self.assertFalse(client.dispatch_details("expired")["available"])
             full = client.dispatch_details("saved", "full")

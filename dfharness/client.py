@@ -6,7 +6,6 @@ import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import Lock
 
 from .capabilities import capability_report
 from .config import port_for_game
@@ -24,10 +23,18 @@ from .rpc import (
     DispatchError,
     pending_pause,
     response_timeout,
+    rpc_deadline,
     run_command,
 )
 from .settings import read_settings, settings_path, write_settings
-from .views import character_brief, choice_observation, concise_observation, render_view, unit_brief
+from .views import (
+    character_brief,
+    choice_observation,
+    concise_observation,
+    reading_status,
+    render_view,
+    unit_brief,
+)
 
 
 class Client:
@@ -41,16 +48,14 @@ class Client:
         metrics_path=None,
         metrics_run=None,
         metrics_episode=None,
-        tokenizer=None,
     ):
         self.port = port_for_game(port)
         self.timeout = timeout
         self.log_path = Path(log_path) if log_path else None
-        self.log_lock = Lock()
         self.settings_path = settings_path
         execution_policy(execution)  # Validate constructor overrides immediately.
         self.execution_override = execution
-        self.metrics_path, self.metrics_run, self.tokenizer = metrics_path, metrics_run, tokenizer
+        self.metrics_path, self.metrics_run = metrics_path, metrics_run
         self.metrics_episode = metrics_episode
         self._metrics = None
         self._metrics_config = None
@@ -80,12 +85,12 @@ class Client:
         config = (
             path,
             self.metrics_run or os.environ.get("DFLLM_METRICS_RUN") or saved["run"],
-            self.tokenizer or saved["tokenizer"],
             self.metrics_episode or os.environ.get("DFLLM_EPISODE") or saved["episode"],
+            self.log_path,
         )
         if config != self._metrics_config:
             self._metrics = Recorder(
-                config[0], run=config[1], encoding=config[2], episode=config[3]
+                config[0], run=config[1], episode=config[2], payload_path=config[3]
             )
             self._metrics_config = config
         return self._metrics
@@ -152,23 +157,17 @@ class Client:
                     "readiness",
                 )
         if self.log_path and (request.get("op") != "poll" or request.get("observe")):
-            with self.log_lock:
-                self.log_path.parent.mkdir(parents=True, exist_ok=True)
-                with self.log_path.open("a", encoding="utf-8") as log:
-                    log.write(
-                        json.dumps(
-                            {
-                                "at": datetime.now(UTC).isoformat(),
-                                "trace_id": active().id,
-                                "request": request,
-                                "response": envelope,
-                                "transport": transport,
-                                "elapsed_ms": round((time.monotonic() - started) * 1000),
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
+            recorder.write(
+                {
+                    "at": datetime.now(UTC).isoformat(),
+                    "trace_id": active().id,
+                    "request": request,
+                    "response": envelope,
+                    "transport": transport,
+                    "elapsed_ms": round((time.monotonic() - started) * 1000),
+                },
+                path=self.log_path,
+            )
         if not envelope.get("ok"):
             raise BridgeError(
                 envelope.get("error", "Unknown DFHack bridge error"),
@@ -187,6 +186,83 @@ class Client:
         return self.request({"op": "status"})
 
     @measured
+    def load_game(self, name, *, timeout=120):
+        """Development save management: load an exact save from the native title screen."""
+        if (
+            not isinstance(name, str)
+            or not 1 <= len(name) <= 100
+            or any(c in name for c in "/\\\0")
+            or name.casefold() in (".", "..", "current")
+        ):
+            raise ValueError("load_game requires a save folder name, not a path")
+        if type(timeout) not in (int, float) or not 0 < timeout <= 300:
+            raise ValueError("load_game timeout must be in (0, 300]")
+        deadline = time.monotonic() + timeout
+        with rpc_deadline(deadline):
+            load = self.request({"op": "load_save", "name": name})
+            status = {}
+            polls = 0
+            while True:
+                result = {
+                    "format": "compact",
+                    "schema_version": 3,
+                    "inputs": load.get("inputs"),
+                    "status": reading_status(status),
+                }
+                if load.get("phase") == "failed":
+                    return dict(
+                        result,
+                        outcome="failed",
+                        blocker={
+                            "kind": "native_load",
+                            "why": load.get("reason"),
+                            "facts": {"name": name},
+                        },
+                    )
+                if (
+                    status.get("map_loaded")
+                    and status.get("ready_for_input")
+                    and status.get("screen")
+                    in ("viewscreen_dungeonmodest", "viewscreen_dwarfmodest")
+                ):
+                    if status.get("save") != name:
+                        return dict(
+                            result,
+                            outcome="interrupted",
+                            blocker={
+                                "kind": "world_changed",
+                                "why": "A different save loaded.",
+                                "facts": {"requested": name, "loaded": status.get("save")},
+                            },
+                        )
+                    after = self.observe(view="choices")
+                    return dict(
+                        result,
+                        outcome="completed",
+                        values=[{"kind": "load_game", "name": name}],
+                        state_id=after["state_id"],
+                        after=after,
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return dict(
+                        result,
+                        outcome="limit_reached",
+                        blocker={
+                            "kind": "load_pending",
+                            "why": "Loading has not finished; read game-status before starting another load.",
+                            "facts": {"name": name, "phase": load.get("phase")},
+                        },
+                    )
+                if polls:
+                    time.sleep(pending_pause(polls - 1, remaining))
+                    if time.monotonic() >= deadline:
+                        continue
+                state = self.request({"op": "load_status"})
+                load, status = state["load"], state["status"]
+                polls += 1
+
+    @measured
     def session(self, limit=20):
         if type(limit) is not int or not 1 <= limit <= 128:
             raise ValueError("session limit must be an integer in [1, 128]")
@@ -197,28 +273,44 @@ class Client:
         return capability_report(self.request({"op": "capabilities"}))
 
     @measured
-    def actions(self, name=None):
+    def actions(self, name=None, *, expand=False):
         from .actions import action_reference
 
-        return action_reference(name)
+        return action_reference(name, expand=expand)
 
     @measured
-    def navigation(self, limit=20):
-        return self.request({"op": "navigation", "limit": limit, "ui_mode": "native"})
+    def navigation(self, limit=20, *, view="concise", since=None):
+        self._validate_view(view, since)
+        request = {
+            "op": "navigation",
+            "limit": limit,
+            "ui_mode": "native",
+            "navigation_grid": view == "full",
+        }
+        value = self.request(request)
+        if view == "full":
+            return value
+        return self._reading(
+            dict(value, status=reading_status(value.get("status", {}))), request, value, since
+        )
 
     @measured
-    def shops(self, shop_type=None, *, site_id=None, limit=20):
+    def shops(self, shop_type=None, *, site_id=None, limit=20, stock=False):
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("shop limit must be an integer in [1, 100]")
         if site_id is not None and (type(site_id) is not int or not 0 <= site_id <= 2147483647):
             raise ValueError("site_id must be a nonnegative native ID")
         if shop_type is not None and (not isinstance(shop_type, str) or not shop_type.strip()):
             raise ValueError("shop_type must be a native shop type token")
+        if type(stock) is not bool:
+            raise ValueError("stock must be boolean")
         request = {"op": "shops", "limit": limit}
         if site_id is not None:
             request["site_id"] = site_id
         if shop_type is not None:
             request["shop_type"] = shop_type
+        if stock:
+            request["stock"] = True
         return self.request(request)
 
     @measured
@@ -228,7 +320,20 @@ class Client:
         return self.request({"op": "locate", "kind": kind, "id": id})
 
     @measured
-    def world_scan(self, tokens=None, *, match="any", limit=20, workers=1, catalog=False):
+    def barter(self, *, side="take", item_type=None, limit=20):
+        if side not in ("take", "give"):
+            raise ValueError("side must be take or give")
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("limit must be in [1, 500]")
+        if item_type is not None and (not isinstance(item_type, str) or not item_type):
+            raise ValueError("item_type must be a native token")
+        request = {"op": "barter", "side": side, "limit": limit}
+        if item_type is not None:
+            request["item_type"] = item_type
+        return self.request(request)
+
+    @measured
+    def world_scan(self, tokens=None, *, match="any", limit=20, catalog=False):
         from .world_scan import search, validate
 
         if type(catalog) is not bool:
@@ -241,17 +346,20 @@ class Client:
                 k: v for k, v in snapshot.items() if k not in ("sites", "errors", "error_count")
             }
         tokens = [tokens] if isinstance(tokens, str) else tokens
-        tokens = validate(tokens, match, limit, workers)
+        tokens = validate(tokens, match, limit)
         snapshot = self.request({"op": "world_sites"})
-        return search(snapshot, tokens, match, limit, workers)
+        return search(snapshot, tokens, match, limit)
 
     @measured
     def character_status(self):
         return self.request({"op": "character_status"})
 
     @measured
-    def brief(self):
-        return character_brief(self.request({"op": "character_brief", "ui_mode": "native"}))
+    def brief(self, *, since=None):
+        self._validate_since(since, "concise")
+        request = {"op": "character_brief", "ui_mode": "native"}
+        value = self.request(request)
+        return self._reading(character_brief(value), request, value, since)
 
     @measured
     def unit(self, unit_id, view="concise", since=None):
@@ -266,6 +374,12 @@ class Client:
         return self._reading(unit_brief(result), {"op": "unit", "unit_id": unit_id}, result, since)
 
     @staticmethod
+    def _validate_view(view, since):
+        if view not in ("concise", "full"):
+            raise ValueError("view must be concise or full")
+        Client._validate_since(since, view)
+
+    @staticmethod
     def _validate_since(since, view):
         if since is not None and (
             view != "concise" or not isinstance(since, str) or not 1 <= len(since) <= 100
@@ -273,13 +387,57 @@ class Client:
             raise ValueError("since requires a read_ref string and view=concise")
 
     def _reading(self, value, query, native, since):
+        epoch = native.get("status", {}).get("world_epoch")
+        if epoch is None:
+            return dict(
+                value,
+                read_cache={"available": False, "reason": "Native world identity is unavailable"},
+            )
         scope = {
             "port": self.port,
-            "world_epoch": native.get("status", {}).get("world_epoch"),
+            "world_epoch": epoch,
             "query": query,
         }
         cache = ReadCache(settings_path(self.settings_path).parent / "readings.sqlite3")
         return cache.project(value, scope, since)
+
+    def _after_scene(self, value, event_detail, force_types, since):
+        # Match an ordinary default look query, independently of execution-only readers.
+        request = {
+            "op": "observe",
+            "width": 41,
+            "height": 21,
+            "map": True,
+            "ui_mode": "native",
+            "scope": "scene",
+            "receipt_state": True,
+            "navigation_grid": False,
+            "radius": 20,
+        }
+        scene = dict(value)
+        scene.pop("target_unit", None)
+        if "scene_reports" in value:
+            for key in (
+                "reports",
+                "report_cursor",
+                "reports_more",
+                "reports_truncated",
+                "reports_total",
+                "report_scope",
+                "report_cursor_reset",
+                "reports_after",
+                "next_report_cursor",
+            ):
+                scene.pop(key, None)
+            scene.update(value["scene_reports"])
+        if "scene_nearby_items" in value:
+            scene["nearby_items"] = value["scene_nearby_items"]
+        return self._reading(
+            concise_observation(scene, event_detail, force_types),
+            dict(request, event_detail=event_detail, force_types=force_types),
+            value,
+            since,
+        )
 
     @measured
     def observe(
@@ -313,6 +471,7 @@ class Client:
         elif view == "concise":
             request["scope"] = "scene"
             request["receipt_state"] = True
+            request["navigation_grid"] = False
         request["radius"] = radius
         if center is not None:
             request["center"] = center
@@ -374,7 +533,13 @@ class Client:
         execution=None,
         result_format=None,
         event_detail=None,
+        *,
+        after=None,
+        since=None,
     ):
+        if after not in (None, "look") or (since is not None and after is None):
+            raise ValueError("after must be look; since requires after=look")
+        self._validate_since(since, "concise")
         settings = read_settings(self.settings_path)
         timeout = settings["dispatch_timeout"] if timeout is None else timeout
         result_format = settings["result_format"] if result_format is None else result_format
@@ -382,14 +547,40 @@ class Client:
         request_id = request_id or str(uuid.uuid4())
         try:
             return run_dispatch(
-                self, action, expect, request_id, timeout, execution, result_format, event_detail
+                self,
+                action,
+                expect,
+                request_id,
+                timeout,
+                execution,
+                result_format,
+                event_detail,
+                after=after,
+                since=since,
             )
         except DFHackError as exc:
             raise DispatchError(request_id, exc) from exc
 
     @measured
-    def items(self, radius=20):
-        return self.request({"op": "items", "radius": radius})
+    def items(
+        self, radius=20, *, building_id=None, item_type=None, limit=100, view="concise", since=None
+    ):
+        self._validate_view(view, since)
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("item limit must be an integer in [1, 500]")
+        request = {"op": "items", "limit": limit, "item_view": view}
+        if item_type is not None:
+            if not isinstance(item_type, str) or not item_type.strip():
+                raise ValueError("item_type must be a native item type token")
+            request["item_type"] = item_type
+        if building_id is not None:
+            if type(building_id) is not int or not 0 <= building_id <= 2147483647:
+                raise ValueError("building_id must be a nonnegative native ID")
+            request["building_id"] = building_id
+        else:
+            request["radius"] = radius
+        value = self.request(request)
+        return value if view == "full" else self._reading(value, request, value, since)
 
     @measured
     def item(self, item_id):

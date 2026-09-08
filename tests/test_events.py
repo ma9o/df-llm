@@ -53,7 +53,9 @@ class EventTests(unittest.TestCase):
             return bridge(req)
 
         with patch.object(Client, "request", side_effect=request):
-            result = Client(port=1, execution={"mode": "complete"}).act({"type": "wait"})
+            result = Client(port=1, execution={"mode": "complete"}).act(
+                {"type": "key", "key": "A_SHORT_WAIT"}
+            )
         self.assertEqual(result["outcome"], "completed")
         self.assertEqual([e["id"] for e in result["events"]], [1, 2])
         self.assertEqual(len(bridge.inputs), 1)

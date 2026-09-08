@@ -1,6 +1,5 @@
 import io
 import json
-import subprocess
 import unittest
 from copy import deepcopy
 from typing import Any
@@ -8,7 +7,6 @@ from unittest.mock import patch
 
 from dfharness.cli import main
 from dfharness.client import Client
-from dfharness.rpc import DFHackError
 from dfharness.world_scan import search
 
 
@@ -53,8 +51,6 @@ class WorldScanTests(unittest.TestCase):
         self.assertEqual(search(data, ["HAS_MARKET"])["results"][0]["total"], 3)
         self.assertEqual(search(data, ["HAS_MARKET"], match="type")["results"][0]["total"], 0)
         self.assertEqual(search(data, ["HAS_MARKET"], match="name")["results"][0]["total"], 1)
-        parallel = search(data, ["HAS_MARKET"], match="flag", workers=2)
-        self.assertEqual(parallel["results"][0], results[0] | {"token": "HAS_MARKET"})
 
     def test_unreadable_or_omitted_flags_are_unknown_only_when_needed_for_matching(self):
         missing = site(0, "Town")
@@ -96,16 +92,12 @@ class WorldScanTests(unittest.TestCase):
         self.assertEqual(search(data, ["CAVE"], match="type")["results"][0]["total"], 0)
         self.assertEqual(search(data, ["CAVE"])["results"][0]["total"], 1)
 
-    def test_parallel_workers_preserve_global_order_counts_and_zero_without_mutation(self):
+    def test_search_preserves_global_order_counts_and_zero_without_mutation(self):
         data = snapshot(
             [site(i, x=i % 7, y=i % 3) for i in reversed(range(101))], origin={"x": 0, "y": 0}
         )
         before = deepcopy(data)
         serial = search(data, ["CAVE", "Stone", "absent"], limit=5)
-        parallel = search(data, ["CAVE", "Stone", "absent"], limit=5, workers=4)
-        self.assertEqual(parallel.pop("workers"), 4)
-        self.assertEqual(serial.pop("workers"), 1)
-        self.assertEqual(parallel, serial)
         self.assertEqual(data, before)
         caves = serial["results"][0]
         self.assertEqual(caves["total"], 101)
@@ -149,13 +141,9 @@ class WorldScanTests(unittest.TestCase):
         self.assertEqual(result["results"][1]["total"], 2)
         self.assertTrue(search(data, ["Stone"], match="name")["complete"])
 
-    def test_empty_world_and_unavailable_world_differ_and_do_not_start_workers(self):
-        with patch("dfharness.world_scan.run_worker") as worker:
-            empty = search(snapshot([]), ["CAVE"], workers=8)
-            unavailable = search(
-                {"available": False, "reason": "No world is loaded"}, ["CAVE"], workers=8
-            )
-        worker.assert_not_called()
+    def test_empty_world_and_unavailable_world_differ(self):
+        empty = search(snapshot([]), ["CAVE"])
+        unavailable = search({"available": False, "reason": "No world is loaded"}, ["CAVE"])
         self.assertEqual(
             empty["results"][0],
             {"token": "CAVE", "matches": [], "total": 0, "truncated": False, "complete": True},
@@ -189,9 +177,6 @@ class WorldScanTests(unittest.TestCase):
                 ("CAVE", {"match": "regex"}),
                 ("CAVE", {"limit": 0}),
                 ("CAVE", {"limit": True}),
-                ("CAVE", {"workers": 0}),
-                ("CAVE", {"workers": 9}),
-                ("CAVE", {"workers": 2.0}),
                 ("CAVE", {"catalog": 1}),
                 ("CAVE", {"catalog": True}),
             ):
@@ -214,16 +199,3 @@ class WorldScanTests(unittest.TestCase):
         self.assertEqual(
             json.loads(output.getvalue()), {"available": True, "tokens": {"site": ["FutureSite"]}}
         )
-
-    def test_worker_failure_never_retries_snapshot_or_returns_partial_success(self):
-        client = Client(port=1)
-        with (
-            patch.object(client, "request", return_value=snapshot([site(0), site(1)])) as request,
-            patch(
-                "dfharness.world_scan.subprocess.run",
-                side_effect=subprocess.TimeoutExpired("worker", 30),
-            ),
-            self.assertRaisesRegex(DFHackError, "snapshot was not reread"),
-        ):
-            client.world_scan("CAVE", workers=2)
-        request.assert_called_once_with({"op": "world_sites"})

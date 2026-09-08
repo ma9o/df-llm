@@ -76,6 +76,111 @@ test('missing site data and wrong shop unions are unknown rather than empty cata
     r=m.shops({realization={buildings={}}},nil,10)
     assert(r.available and r.matched==0 and r.truncated==false)
 end)
+local function stock_site(items)
+    return {global_min_x=0,global_min_y=0,realization={buildings={{id=105,type=3,min_x=0,max_x=0,
+        min_y=0,max_y=0,civzone_id=0,building_info={tag='shop',type=0,name='store'},items=items}}}}
+end
+test('sale allotments preserve zero and skip non-sale payloads',function()
+    env.df.resource_allotment_specifier_type={[0]='ARMOR_BODY',[1]='WEAPON_MELEE'}
+    local s=stock_site({{flag={for_sale=true},allotment=0,amount=0},
+        {flag={for_sale=true},allotment=1,amount=15},
+        setmetatable({flag={for_sale=false}},{__index=function()error('Not for sale')end})})
+    local r=m.shops(s,nil,1,nil,true).entries[1].stock_allotments
+    assert(r.available and r.units_by_type.ARMOR_BODY==0 and r.units_by_type.WEAPON_MELEE==15)
+    assert(r.scanned==3 and not r.truncated)
+    s.realization.buildings[1].items[1].flag.for_sale=nil
+    r=m.shops(s,nil,1,nil,true).entries[1].stock_allotments
+    assert(not r.available and r.reason)
+end)
+test('stock is read only for requested and returned shop entries',function()
+    local reads=0
+    local s=stock_site({})
+    local far=setmetatable({id=106,type=3,min_x=16,max_x=16,min_y=0,max_y=0,civzone_id=-1,
+        building_info={tag='shop',type=0,name='far'}},{__index=function(_,key)
+            if key=='items' then reads=reads+1;error('Unrequested stock')end
+        end})
+    s.realization.buildings[2]=far
+    assert(m.shops(s,{x=0,y=0},1,nil,true).entries[1].id==105 and reads==0)
+    local r=m.shops(s,nil,2)
+    assert(not r.entries[1].stock_allotments and not r.entries[2].stock_allotments and reads==0)
+end)
+test('allotment truncation uses counts independently of native vector indexing',function()
+    local items={};for i=1,1025 do items[i]={flag={for_sale=true},allotment=0,amount=1}end
+    local r=m.shops(stock_site(items),nil,1,nil,true).entries[1].stock_allotments
+    assert(r.available and r.scanned==1024 and r.truncated and r.units_by_type.ARMOR_BODY==1024)
+    assert(not r.armor_materials_complete and r.armor_materials_unavailable_count==1024)
+    assert(#r.armor_materials_unavailable==8)
+end)
+test('armor material lookup follows native production references, preserving zero and source records',function()
+    local spec={mat_type=0,mat_index=2,getType=function()return 0 end}
+    local list=setmetatable({[0]=spec},{__len=function()return 1 end})
+    env.df.global.world.world_data.resource_allotments={{index=17,resource_allotments={[0]=list}}}
+    env.df.resource_allotment_specifier_armor_bodyst={is_instance=function(_,v)return v==spec end}
+    env.dfhack.matinfo={decode=function(t,i)
+        assert(t==0 and i==2);return {getToken=function()return 'INORGANIC:IRON' end}
+    end}
+    local zero={flag={for_sale=true},allotment=0,amount=0,production_zone_index=17,
+        allotment_idx=0,controlling_civ=-1}
+    local stocked={flag={for_sale=true},allotment=0,amount=3,production_zone_index=17,
+        allotment_idx=0,controlling_civ=-1}
+    local s=stock_site({zero})
+    local r=m.shops(s,nil,1,nil,true).entries[1].stock_allotments
+    assert(r.available and r.armor_materials_complete and r.armor_materials.ARMOR_BODY['INORGANIC:IRON']==0)
+    s.realization.buildings[1].items[2]=stocked
+    r=m.shops(s,nil,1,nil,true).entries[1].stock_allotments
+    assert(r.armor_materials.ARMOR_BODY['INORGANIC:IRON']==3 and r.units_by_type.ARMOR_BODY==3)
+    assert(not r.quality and not r.weight_kg and not r.item_ids and stocked.amount==3)
+end)
+test('controlling entity references and unknown material readers never masquerade as missing stock',function()
+    local spec={getType=function()return 0 end,mat_type=0,mat_index=2}
+    env.df.resource_allotment_specifier_armor_bodyst={is_instance=function(_,v)return v==spec end}
+    local list=setmetatable({[0]=spec},{__len=function()return 1 end})
+    local entity={resource_allotment={resource_allotments={[0]=list}}}
+    env.df.historical_entity={find=function(id)assert(id==0);return entity end}
+    local entry={flag={for_sale=true},allotment=0,amount=2,production_zone_index=-1,
+        allotment_idx=0,controlling_civ=0}
+    local function read()return m.shops(stock_site({entry}),nil,1,nil,true).entries[1].stock_allotments end
+    assert(read().armor_materials.ARMOR_BODY['INORGANIC:IRON']==2)
+    for _,break_read in ipairs({
+        function()entry.allotment_idx=1 end,
+        function()entry.allotment_idx=0;spec.getType=function()return 1 end end,
+        function()spec.getType=function()return 0 end;env.dfhack.matinfo.decode=function()return nil end end,
+    })do
+        break_read()
+        local r=read()
+        assert(r.available and r.units_by_type.ARMOR_BODY==2 and r.armor_materials_complete==false)
+        assert(not next(r.armor_materials) and r.armor_materials_unavailable_count==1)
+    end
+end)
+test('shop summaries and non-armor stock do not read production materials',function()
+    env.df.global.world.world_data.resource_allotments=setmetatable({},
+        {__index=function()error('Unrequested production material scan')end})
+    local s=stock_site({{flag={for_sale=true},allotment=1,amount=5}})
+    assert(m.shops(s,nil,1).available)
+    local r=m.shops(s,nil,1,nil,true).entries[1].stock_allotments
+    assert(r.available and r.units_by_type.WEAPON_MELEE==5 and not r.armor_materials)
+end)
+test('live stock comes from the Shop subzone, never the Home zone or another building',function()
+    local old_find=env.df.building.find
+    local home={id=0,x1=0,y1=0,x2=10,y2=10,z=0,centerx=5,centery=5,assigned_items={99}}
+    env.df.building.find=function(id)if id==0 then return home end end
+    env.df.building_civzonest={is_instance=function(_,v)return v.tag=='zone'end}
+    env.df.civzone_type={[0]='Home',[1]='Shop'}
+    env.df.item_type={[0]='ARMOR'}
+    env.df.item={find=function(id)assert(id~=99,'Home contents must not be used');return {getType=function()return 0 end}end}
+    local shop={tag='zone',id=1,type=1,site_realization_building_id=105,x1=1,y1=1,x2=9,y2=9,z=0,assigned_items={0,1}}
+    local far={tag='zone',id=2,type=1,site_realization_building_id=105,x1=20,y1=20,x2=29,y2=29,z=0,assigned_items={99}}
+    env.df.global.world.buildings={other={ZONE_SHOP={far,shop}}}
+    local s=stock_site({})
+    local r=m.shops(s,nil,1,nil,true).entries[1].live_stock
+    assert(r.available and r.item_count==2 and r.counts.ARMOR==2 and #r.zone_ids==1 and r.zone_ids[1]==1)
+    shop.assigned_items={};r=m.shops(s,nil,1,nil,true).entries[1].live_stock
+    assert(r.available and r.item_count==0)
+    env.df.global.world.buildings.other.ZONE_SHOP={far}
+    r=m.shops(s,nil,1,nil,true).entries[1].live_stock
+    assert(not r.available and r.reason)
+    env.df.building.find=old_find
+end)
 test('finder serializes coordinates and IDs without retaining native references',function()
     local r=m.locate('figure',0)
     assert(r.available and r.location_type=='Local' and r.dead==false and r.holder_hf_id==0)

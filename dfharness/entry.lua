@@ -5,9 +5,9 @@
 local assets={bridge='bridge',glyph='cp437',interactions='interactions',ui='native_ui',
     guard='input_guard',runtime='runtime',reports='reports',environment='environment',
     movement='movement',wire='wire',session='session',screen='screen',items='items',
-    rest='rest',aim='aim',saving='saving',health='health',progress='progress',attack='attack',burden='burden',pathing='pathing',
-    report_events='report_events',fastcombat='fastcombat',geography='geography',checkpoints='checkpoints',
-    world_scan='world_scan'}
+    rest='rest',aim='aim',saving='quicksave',health='health',progress='progress',attack='attack',burden='burden',pathing='pathing',
+    report_events='report_events',fastcombat='fastcombat',geography='geography',
+    world_scan='world_scan',barter='barter',exchange='exchange'}
 
 function request(payload,package_path)
     assert(type(package_path)=='string' and package_path:sub(-1)=='/'
@@ -23,6 +23,9 @@ function request(payload,package_path)
         modules[key]=factory
     end
     for key,name in pairs(assets)do include(key,name)end
+    if req.op=='load_save' or req.op=='load_status' then
+        modules.load_save=dfhack.reqscript(package_path..'load-save')
+    end
     if req.op=='character_status' or req.op=='character_brief' then
         include('character','character');include('details','character_details')
     elseif req.character_progress then

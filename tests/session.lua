@@ -41,30 +41,17 @@ test('world reload revokes live leases and old progress, retaining diagnostics',
     local epoch=s.world_epoch;hooks.df_llm_session(1)
     assert(s.world_epoch~=epoch and not m.matches(s.dispatches.old,s))
 end)
-test('save-restored progress requires a checkpoint match and the same adventurer',function()
-    local record={restored_epoch=s.world_epoch,resume_guard='p1:saved',adventurer_id=0}
-    assert(not m.matches(record,s)) -- Still not an active input lease.
-    assert(not m.resume_reason(record,s,{adventurer_id=0},'p1:saved'))
-    assert(m.resume_reason(record,s,{adventurer_id=0},'p1:changed'))
-    assert(m.resume_reason(record,s,{adventurer_id=1},'p1:saved'))
-    record.restore_reason='Uncertain input'
-    assert(m.resume_reason(record,s,{adventurer_id=0},'p1:saved')=='Uncertain input')
-    record.restore_reason=nil
-    hooks.df_llm_session(2);hooks.df_llm_session(1)
-    assert(m.resume_reason(record,s,{adventurer_id=0},'p1:saved'))
-end)
-test('storage failure preserves ordinary RAM execution but cannot reuse a saved predecessor',function()
-    env.dfhack.isWorldLoaded=function()return true end
-    local life=assert(load(source,'session-storage-fixture','t',env))({begin=function()return false,'Storage down'end})
-    local current={dispatches={}}
-    local record={}
-    assert(life.persist_begin(current,'ordinary',record) and record.checkpoint_unavailable=='Storage down')
-    current.dispatches.old={workflow={}}
-    assert(life.persist_begin(current,'ram-resume',{},'old'))
-    current.dispatches.old.persistent_resume_guard='p1:saved'
-    local ok,reason=life.persist_begin(current,'saved-resume',{},'old')
-    assert(not ok and reason=='Storage down')
-    current.dispatches.old={resume_guard='p1:restored'}
-    assert(not life.persist_begin(current,'restored-resume',{},'old'))
+test('session index is bounded and never reads persistent storage',function()
+    env.dfhack.persistent=setmetatable({},{__index=function()error('Persistent read')end})
+    s.dispatch_order={'older','latest'}
+    s.dispatches.older={world_epoch='old',dispatch={outcome='completed'}}
+    s.dispatches.latest={world_epoch=s.world_epoch,workflow={action={type='walk_to'}}}
+    s.active_dispatch='latest'
+    local out=m.describe(s,1)
+    assert(out.total==2 and out.truncated and #out.dispatches==1)
+    assert(out.dispatches[1].id=='latest' and out.dispatches[1].active)
+    assert(not out.dispatches[1].world_changed)
+    assert(m.lookup(s,'missing')==nil)
+    assert(m.describe(s,2).dispatches[2].world_changed)
 end)
 return {passed=#names,tests=names,game_inputs=0}

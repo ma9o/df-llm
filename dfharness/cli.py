@@ -14,12 +14,14 @@ from .rpc import DFHackError, DispatchError, run_command
 
 def parser():
     p = argparse.ArgumentParser(
-        description="Control a running Dwarf Fortress through DFHack; adventure mode first."
+        description="Control a running Dwarf Fortress through DFHack; adventure mode first.",
+        epilog="Agent quickstart: dfctl guide (offline). Exact action schema: dfctl actions NAME.",
     )
     p.add_argument(
         "--port", type=int, help="Override DFHACK_PORT and the game's remote-server.json"
     )
     p.add_argument("--timeout", type=float, default=10, help="RPC response timeout in seconds")
+    p.add_argument("--pretty", action="store_true", help="Indent JSON for human reading")
     p.add_argument(
         "--log", type=Path, help="Append requests and observations to a JSONL episode log"
     )
@@ -41,9 +43,6 @@ def parser():
     p.add_argument("--metrics-run", help="Label measurements for before/after comparisons")
     p.add_argument("--episode", help="Instruction identity for measurements (or DFLLM_EPISODE)")
     p.add_argument(
-        "--tokenizer", help="Local tiktoken encoding for payload counts (default o200k_base)"
-    )
-    p.add_argument(
         "--mode", choices=["step", "complete"], help="Override saved controller dispatch mode"
     )
     p.add_argument(
@@ -61,6 +60,9 @@ def parser():
         help="Controller interruption conditions as a JSON object",
     )
     subs = p.add_subparsers(dest="command", required=True)
+    subs.add_parser(
+        "guide", help="Print the compact agent CLI guide; offline, no settings or metrics"
+    )
     subs.add_parser("doctor", help="Find CrossOver, DFHack, saves, and the RPC connection")
     audit = subs.add_parser(
         "audit-log",
@@ -78,6 +80,9 @@ def parser():
         help="Baseline JSONL file; repeat for multiple files",
     )
     metrics.add_argument("--run", help="Select a run label from the current files")
+    metrics.add_argument(
+        "--tokenizer", help="Count captured controller payloads offline with a prepared encoding"
+    )
     metrics.add_argument(
         "--idle-gap",
         type=float,
@@ -105,12 +110,26 @@ def parser():
         "--text", action="store_true", help="Render the character report as readable text"
     )
     subs.add_parser("game-status", help="Read only the mode, screen, turn readiness, and version")
-    session = subs.add_parser("session", help="Read saved dispatch IDs and checkpoint eligibility")
+    load = subs.add_parser(
+        "load-game",
+        aliases=["quickload"],
+        help="Development: load an exact save from the native title screen through DFHack",
+        description="Load an exact save through DFHack. Requires the native title screen with no world loaded; does not quit a running adventure.",
+    )
+    load.add_argument("name", help="Save folder name, not a path")
+    load.add_argument(
+        "--seconds", type=float, default=120, help="Loading deadline, up to 300 seconds"
+    )
+    load.set_defaults(command="load-game")
+    session = subs.add_parser(
+        "session", help="List recent dispatch IDs in the running game session"
+    )
     session.add_argument("--limit", type=int, default=20)
     brief = subs.add_parser(
         "brief", help="Read selected character essentials; status remains comprehensive"
     )
     brief.add_argument("--text", action="store_true")
+    brief.add_argument("--since", help="Return changes against a previous brief read_ref")
     unit = subs.add_parser(
         "unit", help="Inspect a visible character's health, skills, attributes and equipment by ID"
     )
@@ -143,6 +162,9 @@ def parser():
         "actions", help="Local action reference; an optional name returns its exact schema"
     )
     reference.add_argument("name", nargs="?")
+    reference.add_argument(
+        "--expand", action="store_true", help="Inline all sequence stage schemas"
+    )
     details = subs.add_parser(
         "dispatch-details", help="Read a saved dispatch without replaying input"
     )
@@ -193,7 +215,18 @@ def parser():
         "items", help="Read visible nearby items and container contents in one call"
     )
     items.add_argument("--radius", type=int, default=20)
-    item = subs.add_parser("item", help="Inspect one carried or visible ground item by ID")
+    items.add_argument(
+        "--building", dest="building_id", type=int, help="Read visible furniture storage"
+    )
+    items.add_argument("--type", dest="item_type", help="Filter root items by native item type")
+    items.add_argument("--limit", type=int, default=100, help="Root items returned, 1..500")
+    items.add_argument("--view", choices=["concise", "full"], default="concise")
+    items.add_argument("--since", help="Return changes against a previous item-list read_ref")
+    barter = subs.add_parser("barter", help="Read and filter the active native trade catalog")
+    barter.add_argument("--side", choices=["take", "give"], default="take")
+    barter.add_argument("--type", dest="item_type", help="Native item type, e.g. ARMOR")
+    barter.add_argument("--limit", type=int, default=20)
+    item = subs.add_parser("item", help="Inspect one carried, ground, or stored visible item by ID")
     item.add_argument("item_id", type=int)
     interrupt = subs.add_parser(
         "interrupt", help="Request that a running dispatch stop before further inputs"
@@ -204,12 +237,19 @@ def parser():
         "navigation", help="Read travel coordinates, native site grid, and character-known leads"
     )
     navigation.add_argument("--limit", type=int, default=20)
+    navigation.add_argument("--view", choices=["concise", "full"], default="concise")
+    navigation.add_argument("--since", help="Return changes against a previous navigation read_ref")
     shops = subs.add_parser("shops", help="Find native shops in the current or specified site")
     shops.add_argument(
         "--type", dest="shop_type", help="Native type, e.g. Armorsmith or FoodImports"
     )
     shops.add_argument("--site-id", type=int)
     shops.add_argument("--limit", type=int, default=20)
+    shops.add_argument(
+        "--stock",
+        action="store_true",
+        help="Include stock counts and armor materials from native sale allotments; live stock can differ",
+    )
     locate = subs.add_parser(
         "locate", help="Locate a historical figure or artifact in DFHack world records"
     )
@@ -219,12 +259,6 @@ def parser():
     scan.add_argument("tokens", nargs="*", help="One or more literal search terms")
     scan.add_argument("--match", choices=["any", "type", "name", "flag"], default="any")
     scan.add_argument("--limit", type=int, default=20, help="Maximum matches per term, 1..100")
-    scan.add_argument(
-        "--workers",
-        type=int,
-        default=1,
-        help="Parallel snapshot filters, 1..8; one is fastest for small worlds",
-    )
     scan.add_argument(
         "--tokens",
         dest="catalog",
@@ -242,7 +276,6 @@ def parser():
     ready.add_argument("--action-id")
     run = subs.add_parser("run", help="Run an explicit DFHack command (advanced escape hatch)")
     run.add_argument("args", nargs=argparse.REMAINDER)
-    subs.add_parser("native-ascii", help="Run the original experimental classic-render capture")
     actions = {}
     for name, need in (("drink", "thirst"), ("eat", "hunger")):
         actions[name] = subs.add_parser(
@@ -304,11 +337,35 @@ def parser():
     actions["end-conversation"] = subs.add_parser(
         "end-conversation", help="Close and verify the conversation interface"
     )
+    actions["open-trade"] = subs.add_parser(
+        "open-trade", help="Open the specified merchant's Shop catalog; no transaction"
+    )
+    actions["open-trade"].add_argument("unit_id", type=int)
+    actions["open-trade"].add_argument("--shop", dest="shop_id", type=int, required=True)
+    actions["close-trade"] = subs.add_parser("close-trade", help="Close the native trade interface")
+    actions["trade"] = subs.add_parser(
+        "trade", help="Submit and verify an exact offer in the open native trade"
+    )
+    actions["trade"].add_argument("unit_id", type=int)
+    actions["trade"].add_argument(
+        "--take", type=json.loads, default=[], help="JSON list of item_id/amount pairs to receive"
+    )
+    actions["trade"].add_argument(
+        "--give", type=json.loads, default=[], help="JSON list of item_id/amount pairs to give"
+    )
+    actions["trade"].add_argument("--offer-currency", type=int, default=0)
+    actions["trade"].add_argument("--request-currency", type=int, default=0)
     actions["save-game"] = subs.add_parser(
-        "save-game", help="Write and verify a named native save checkpoint"
+        "save-game",
+        aliases=["quicksave"],
+        help="Write and verify a named checkpoint through DFHack quicksave",
+        description="Write an adventure checkpoint through the DFHack quicksave helper and verify the resulting world file. Existing folders require --overwrite.",
     )
     actions["save-game"].add_argument("name")
-    actions["save-game"].add_argument("--overwrite", action="store_true")
+    actions["save-game"].add_argument(
+        "--overwrite", action="store_true", help="Replace the existing named checkpoint"
+    )
+    actions["save-game"].set_defaults(command="save-game")
     actions["combat"] = subs.add_parser(
         "combat", help="Approach and select an explicit combat target; return undelegated decisions"
     )
@@ -523,11 +580,22 @@ def parser():
         )
         action.add_argument("--result-format", choices=["compact", "full"])
         action.add_argument(
+            "--after", choices=["look"], help="Include the final scene with the receipt"
+        )
+        action.add_argument("--since", help="Use a previous look read_ref for --after look")
+        action.add_argument(
             "--event-detail",
             choices=["task", "all"],
             help="Include all reports or omit counted routine/ambient reports",
         )
         action.add_argument("--text", action="store_true", help="Return a compact text observation")
+    for command in set(subs.choices.values()):
+        command.add_argument(
+            "--pretty",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="Indent JSON for human reading",
+        )
     return p
 
 
@@ -540,7 +608,15 @@ def main(argv=None):
         for key in ("mode", "acknowledge", "max_steps", "interrupt_on")
         if getattr(args, key) is not None
     }
-    if args.command in ("setup", "doctor", "audit-log", "metrics", "launch", "native-ascii", "run"):
+    if args.command in (
+        "guide",
+        "setup",
+        "doctor",
+        "audit-log",
+        "metrics",
+        "launch",
+        "run",
+    ):
         return execute(args)
     try:
         client = Client(
@@ -552,7 +628,6 @@ def main(argv=None):
             metrics_path=args.metrics_path,
             metrics_run=args.metrics_run,
             metrics_episode=args.episode,
-            tokenizer=args.tokenizer,
         )
         with client.metrics.interaction(
             "cli", args.command, {"argv": list(argv)}, started_ns=started_ns
@@ -575,7 +650,7 @@ def report_error(exc):
             input_sent=exc.input_sent,
             details=exc.details,
         )
-    output = json.dumps(error, ensure_ascii=False)
+    output = json.dumps(error, ensure_ascii=False, separators=(",", ":"))
     span = active()
     if span is not None:
         span.fail(exc)
@@ -586,6 +661,9 @@ def report_error(exc):
 
 def execute(args, client=None):
     try:
+        if args.command == "guide":
+            sys.stdout.write(Path(__file__).with_name("guide.md").read_text(encoding="utf-8"))
+            return 0
         if args.command == "setup":
             result = configure(args.setup_port)
         elif args.command == "doctor":
@@ -599,7 +677,7 @@ def execute(args, client=None):
             from .settings import read_settings, settings_path
 
             if args.prepare_tokenizer:
-                if args.paths or args.baseline or args.run or args.text:
+                if args.paths or args.baseline or args.run or args.text or args.tokenizer:
                     raise ValueError("Tokenizer preparation is separate from report options")
                 from .metrics_tokens import prepare
 
@@ -610,19 +688,18 @@ def execute(args, client=None):
                 settings_path(args.settings).parent
                 / Path(config["path"] or "metrics.jsonl").expanduser()
             ]
-            result = report(paths, baseline=args.baseline, run=args.run, idle_gap=args.idle_gap)
+            result = report(
+                paths,
+                baseline=args.baseline,
+                run=args.run,
+                idle_gap=args.idle_gap,
+                tokenizer=args.tokenizer,
+            )
             if args.text:
                 print(render(result))
                 return 0
         elif args.command == "launch":
             result = launch(args.direct)
-        elif args.command == "native-ascii":
-            import os
-
-            env = dict(os.environ, DFHACK_PORT=str(port_for_game(args.port)))
-            return subprocess.run(
-                [str(Path(__file__).resolve().parents[1] / "df-ascii")], env=env
-            ).returncode
         elif args.command == "run":
             if not args.args:
                 raise ValueError("Usage: ./dfctl run COMMAND [ARG ...]")
@@ -636,12 +713,14 @@ def execute(args, client=None):
                 result = client.status()
             elif args.command == "game-status":
                 result = client.game_status()
+            elif args.command == "load-game":
+                result = client.load_game(args.name, timeout=args.seconds)
             elif args.command == "capabilities":
                 result = client.capabilities()
             elif args.command == "actions":
-                result = client.actions(args.name)
+                result = client.actions(args.name, expand=args.expand)
             elif args.command == "brief":
-                result = client.brief()
+                result = client.brief(since=args.since)
             elif args.command == "unit":
                 result = client.unit(args.unit_id, args.view, since=args.since)
             elif args.command == "settings":
@@ -660,11 +739,15 @@ def execute(args, client=None):
                     update = dict(update or {}, dispatch_timeout=args.setting_seconds)
                 result = client.settings(update, reset=args.reset)
             elif args.command == "navigation":
-                result = client.navigation(args.limit)
+                result = client.navigation(args.limit, view=args.view, since=args.since)
             elif args.command == "shops":
-                result = client.shops(args.shop_type, site_id=args.site_id, limit=args.limit)
+                result = client.shops(
+                    args.shop_type, site_id=args.site_id, limit=args.limit, stock=args.stock
+                )
             elif args.command == "session":
                 result = client.session(args.limit)
+            elif args.command == "barter":
+                result = client.barter(side=args.side, item_type=args.item_type, limit=args.limit)
             elif args.command == "locate":
                 result = client.locate(args.kind, args.id)
             elif args.command == "world-scan":
@@ -672,7 +755,6 @@ def execute(args, client=None):
                     args.tokens,
                     match=args.match,
                     limit=args.limit,
-                    workers=args.workers,
                     catalog=args.catalog,
                 )
             elif args.command == "character-status":
@@ -694,7 +776,14 @@ def execute(args, client=None):
                     since=args.since,
                 )
             elif args.command == "items":
-                result = client.items(args.radius)
+                result = client.items(
+                    args.radius,
+                    building_id=args.building_id,
+                    item_type=args.item_type,
+                    limit=args.limit,
+                    view=args.view,
+                    since=args.since,
+                )
             elif args.command == "item":
                 result = client.item(args.item_id)
             elif args.command == "interrupt":
@@ -747,11 +836,18 @@ def execute(args, client=None):
                     execution,
                     args.result_format,
                     args.event_detail,
+                    after=args.after,
+                    since=args.since,
                 )
         if getattr(args, "text", False) and isinstance(result, dict) and "status" in result:
             output = render_observation(result)
         else:
-            output = json.dumps(result, ensure_ascii=False, indent=2)
+            output = json.dumps(
+                result,
+                ensure_ascii=False,
+                indent=2 if args.pretty else None,
+                separators=None if args.pretty else (",", ":"),
+            )
         if active() is not None:
             active().respond(output + "\n", text=True)
         print(output, flush=True)

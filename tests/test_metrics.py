@@ -13,6 +13,7 @@ from unittest.mock import patch
 from dfharness.cli import main
 from dfharness.client import Client
 from dfharness.metrics import Recorder, active, intent, serialize
+from dfharness.metrics_report import read_logs
 from dfharness.metrics_tokens import encoding_path, load_encoding, prepare, tokenizer
 from dfharness.program import MARKER
 from dfharness.rpc import BridgeError, CommandError, DFHackError
@@ -44,7 +45,7 @@ class MetricsTests(unittest.TestCase):
         )
         env.start()
         self.addCleanup(env.stop)
-        encoder = patch("dfharness.metrics.tokenizer", return_value=ByteEncoder())
+        encoder = patch("dfharness.metrics_tokens.tokenizer", return_value=ByteEncoder())
         self.encoder = encoder.start()
         self.addCleanup(encoder.stop)
 
@@ -52,7 +53,7 @@ class MetricsTests(unittest.TestCase):
         return [json.loads(line) for line in self.path.read_text().splitlines()]
 
     def client(self, **kwargs):
-        return Client(port=1, metrics_path=self.path, tokenizer="test_bytes", **kwargs)
+        return Client(port=1, metrics_path=self.path, **kwargs)
 
     def test_disabled_does_not_tokenize_or_create_a_log(self):
         client = Client(port=1)
@@ -69,7 +70,9 @@ class MetricsTests(unittest.TestCase):
             (row["surface"], row["operation"], row["episode"]), ("python", "status", "room")
         )
         self.assertEqual(row["input_bytes"], len(serialize({}).encode()))
-        self.assertEqual(row["output_tokens"], len(serialize(result).encode()))
+        self.assertEqual(row["output_bytes"], len(serialize(result).encode()))
+        self.assertIsNone(row["output_tokens"])
+        self.encoder.assert_not_called()
         self.assertNotIn("Cobár", self.path.read_text())
         self.assertEqual(row["id"], row["trace_id"])
 
@@ -94,7 +97,7 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(row["operation"], "actions")
         self.assertEqual(row["episode"], "combat-1")
         self.assertEqual(row["output_bytes"], len(output.getvalue().encode()))
-        self.assertEqual(row["output_tokens"], row["output_bytes"])
+        self.assertIsNone(row["output_tokens"])
 
     def test_cli_stdin_and_error_are_measured_without_payload_retention(self):
         with (
@@ -115,7 +118,7 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(row["outcome"], "error")
         self.assertNotIn("Missing item", self.path.read_text())
 
-    def test_cli_emits_before_tokenizer_work_and_records_the_wall_interval(self):
+    def test_cli_never_tokenizes_and_records_the_wall_interval(self):
         output = io.StringIO()
         with (
             patch("sys.stdout", output),
@@ -126,7 +129,8 @@ class MetricsTests(unittest.TestCase):
             )
         flush.assert_called_once_with()
         (row,) = self.rows()
-        self.assertEqual(row["output_tokens"], len(output.getvalue().encode()))
+        self.assertEqual(row["output_bytes"], len(output.getvalue().encode()))
+        self.encoder.assert_not_called()
         wall = (
             datetime.fromisoformat(row["finished_at"]) - datetime.fromisoformat(row["at"])
         ).total_seconds() * 1000
@@ -154,7 +158,9 @@ class MetricsTests(unittest.TestCase):
             patch("dfharness.client.prepare_program", side_effect=program),
             patch("dfharness.client.run_command", side_effect=command),
         ):
-            result = self.client().act({"type": "wait"}, execution={"mode": "complete"})
+            result = self.client().act(
+                {"type": "key", "key": "A_SHORT_WAIT"}, execution={"mode": "complete"}
+            )
         rows = self.rows()
         controller = [row for row in rows if row["kind"] == "interaction"]
         rpcs = [row for row in rows if row["kind"] == "rpc"]
@@ -184,14 +190,14 @@ class MetricsTests(unittest.TestCase):
         self.assertIsNone(call["output_tokens"])
         self.assertIsNone(active())
 
-    def test_sink_and_tokenizer_failures_do_not_change_results(self):
+    def test_sink_failure_does_not_change_results_and_tokenizer_is_never_called(self):
         self.encoder.side_effect = OSError("no encoding")
         with patch("sys.stderr", new=io.StringIO()):
             result = self.client().actions("drop")
         self.assertEqual(result["action"], "drop")
         self.assertIsNone(self.rows()[0]["output_tokens"])
-        self.assertEqual(self.rows()[0]["token_error"], "OSError")
-        recorder = Recorder(self.root, encoding="test_bytes")  # Directory, not a log file.
+        self.encoder.assert_not_called()
+        recorder = Recorder(self.root)  # Directory, not a log file.
         with (
             patch("sys.stderr", new=io.StringIO()),
             recorder.interaction("python", "status", {}) as span,
@@ -201,7 +207,7 @@ class MetricsTests(unittest.TestCase):
         self.assertIsNone(active())
 
     def test_contexts_and_appends_remain_separate_under_concurrency(self):
-        recorder = Recorder(self.path, episode="parallel", encoding="test_bytes")
+        recorder = Recorder(self.path, episode="parallel")
         barrier = Barrier(4)
 
         def call(index):
@@ -245,7 +251,7 @@ class MetricsTests(unittest.TestCase):
             intent({"type": "strike", "unit_id": 0, "item_id": 42, "style": "heavy"}),
             {"action": "strike", "target": {"unit_id": 0}},
         )
-        recorder = Recorder(self.path, encoding="test_bytes")
+        recorder = Recorder(self.path)
         with recorder.interaction("python", "act", {}) as span:
             span.action(
                 {
@@ -262,6 +268,27 @@ class MetricsTests(unittest.TestCase):
         (row,) = self.rows()
         self.assertEqual(row["blocked_intent"], {"action": "strike", "target": {"unit_id": 9}})
         self.assertNotIn("secret", self.path.read_text())
+
+    def test_explicit_payload_log_can_be_tokenized_offline_without_duplicate_interactions(self):
+        trace = self.root / "trace.jsonl"
+        result = self.client(log_path=trace).actions("drop")
+        self.encoder.assert_not_called()
+        rows, coverage = read_logs([self.path, trace], tokenizer="test_bytes")
+        self.encoder.assert_called_once_with("test_bytes")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(coverage["duplicate_records"], 1)
+        self.assertEqual(rows[0]["output_tokens"], len(serialize(result).encode()))
+        self.assertNotIn("output", rows[0])
+
+    def test_payload_capture_without_metrics_and_failed_trace_sink_are_passive(self):
+        trace = self.root / "trace.jsonl"
+        result = Client(port=1, metrics_path=False, log_path=trace).actions("drop")
+        rows, _ = read_logs([trace], tokenizer="test_bytes")
+        self.assertEqual(rows[0]["output_tokens"], len(serialize(result).encode()))
+        with patch("sys.stderr", new=io.StringIO()):
+            self.assertEqual(
+                Client(port=1, metrics_path=False, log_path=self.root).actions("drop"), result
+            )
 
 
 class OfflineTokenizerTests(unittest.TestCase):

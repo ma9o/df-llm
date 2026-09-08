@@ -39,9 +39,7 @@ def save_scene(mode=None, name="", *, exists=False, modified=None, saved="old"):
 
 class SavingTests(unittest.TestCase):
     def test_save_uses_its_dispatch_budget_and_returns_the_verified_file(self):
-        bridge = Bridge(
-            save_scene("filename", "night"), [save_scene(exists=True, modified=2, saved="night")]
-        )
+        bridge = Bridge(save_scene(), [save_scene(exists=True, modified=2, saved="night")])
         waits = []
 
         def request(payload):
@@ -79,21 +77,12 @@ class SavingTests(unittest.TestCase):
         self.addCleanup(mock.stop)
         return client
 
-    def test_named_save_opens_edits_submits_and_requires_written_file(self):
-        bridge = Bridge(
-            save_scene(),
-            [
-                save_scene("main"),
-                save_scene("filename"),
-                save_scene("filename", "night"),
-                save_scene(exists=True, modified=2, saved="night"),
-            ],
-        )
+    def test_named_save_uses_one_native_quicksave_request(self):
+        bridge = Bridge(save_scene(), [save_scene(exists=True, modified=2, saved="night")])
         result = self.client(bridge).act({"type": "save_game", "name": "night"})
         self.assertEqual(result["dispatch"]["outcome"], "completed")
-        self.assertEqual(len(bridge.inputs), 4)
         self.assertEqual(
-            bridge.inputs[2], {"type": "edit_text", "field": "save_name", "value": "night"}
+            bridge.inputs, [{"type": "save_native", "name": "night", "overwrite": False}]
         )
         self.assertTrue(
             all(call["save_name"] == "night" for call in bridge.calls if call["op"] == "poll")
@@ -107,19 +96,18 @@ class SavingTests(unittest.TestCase):
 
     def test_delegated_overwrite_verifies_changed_file_timestamp(self):
         bridge = Bridge(
-            save_scene("filename", "night", exists=True, modified=1),
-            [
-                save_scene("overwrite", "night", exists=True, modified=1),
-                save_scene(exists=True, modified=2, saved="night"),
-            ],
+            save_scene(exists=True, modified=1),
+            [save_scene(exists=True, modified=2, saved="night")],
         )
         result = self.client(bridge).act({"type": "save_game", "name": "night", "overwrite": True})
         self.assertEqual(result["dispatch"]["outcome"], "completed")
-        self.assertEqual([a["option_id"] for a in bridge.inputs], ["SUBMIT_FILENAME", "OVERWRITE"])
+        self.assertEqual(
+            bridge.inputs, [{"type": "save_native", "name": "night", "overwrite": True}]
+        )
 
-    def test_menu_close_or_save_name_change_without_a_new_write_is_not_success(self):
+    def test_save_name_change_without_a_new_write_is_not_success_or_retried(self):
         bridge = Bridge(
-            save_scene("filename", "night", exists=True, modified=1),
+            save_scene(exists=True, modified=1),
             [save_scene(exists=True, modified=1, saved="night")],
         )
         client = self.client(bridge)
@@ -128,31 +116,18 @@ class SavingTests(unittest.TestCase):
         resumed = client.act(result["dispatch"]["resume_action"])
         self.assertEqual(resumed["dispatch"]["outcome"], "no_effect")
         self.assertEqual(len(bridge.inputs), 1)
-
-    def test_step_resume_does_not_edit_or_submit_the_filename_twice(self):
-        bridge = Bridge(
-            save_scene("filename", "other"),
-            [save_scene("filename", "night"), save_scene(exists=True, modified=1, saved="night")],
+        bridge.view = save_scene(exists=True, modified=2, saved="night")
+        self.assertEqual(
+            client.act(resumed["dispatch"]["resume_action"])["dispatch"]["outcome"], "completed"
         )
-        client = self.client(bridge)
-        first = client.act({"type": "save_game", "name": "night"}, execution={"mode": "step"})
-        self.assertEqual(first["dispatch"]["outcome"], "in_progress")
-        result = client.act(first["dispatch"]["resume_action"])
-        self.assertEqual(result["dispatch"]["outcome"], "completed")
-        self.assertEqual(len(bridge.inputs), 2)
+        self.assertEqual(len(bridge.inputs), 1)
 
-    def test_partial_filename_edit_stops_and_resume_verifies_a_late_effect(self):
-        bridge = Bridge(save_scene("filename", "other"), [save_scene("filename", "ni")])
-        client = self.client(bridge)
-        first = client.act({"type": "save_game", "name": "night"})
-        self.assertEqual(first["dispatch"]["outcome"], "no_effect")
-        second = client.act(first["dispatch"]["resume_action"])
-        self.assertEqual(second["dispatch"]["outcome"], "no_effect")
-        bridge.view = save_scene("filename", "night")
-        bridge.views.append(save_scene(exists=True, modified=1, saved="night"))
-        third = client.act(second["dispatch"]["resume_action"])
-        self.assertEqual(third["dispatch"]["outcome"], "completed")
-        self.assertEqual(len(bridge.inputs), 2)
+    def test_an_unfinished_filename_or_overwrite_choice_is_preserved(self):
+        for mode in ("filename", "overwrite"):
+            bridge = Bridge(save_scene(mode, "other"))
+            result = self.client(bridge).act({"type": "save_game", "name": "night"})
+            self.assertEqual(result["dispatch"]["outcome"], "needs_input")
+            self.assertFalse(bridge.inputs)
 
     def test_unavailable_native_filesystem_is_not_an_empty_save_directory(self):
         view = save_scene()

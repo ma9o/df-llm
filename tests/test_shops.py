@@ -45,10 +45,21 @@ class ShopTests(unittest.TestCase):
                 {"site_id": False},
                 {"shop_type": ""},
                 {"shop_type": 1},
+                {"stock": 1},
+                {"stock": None},
             ):
                 with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                     client.shops(**kwargs)
             send.assert_not_called()
+
+    def test_stock_is_explicit_on_both_surfaces(self):
+        with patch.object(Client, "request", return_value={}) as send:
+            Client(port=1).shops(stock=True)
+            send.assert_called_once_with({"op": "shops", "limit": 20, "stock": True})
+            send.reset_mock()
+            with patch("sys.stdout", new_callable=io.StringIO):
+                self.assertEqual(main(["--port", "1", "shops", "--stock"]), 0)
+            send.assert_called_once_with({"op": "shops", "limit": 20, "stock": True})
 
 
 if __name__ == "__main__":

@@ -39,20 +39,23 @@ local runtime=runtime_reader({array=array,text=text,bindings=bindings,calculatio
     report_events=report_events,fastcombat=fastcombat})
 local screen_reader=modules.screen({array=array,glyph=glyph})
 local read_reports=modules.reports({array=array,text=text})
-local environment=modules.environment({array=array})
+local item_reader=modules.items({array=array,text=text,optional=optional,copy=wire.clone})
+local barter=modules.barter({array=array,text=text})
+local ui_rows,click
+local exchange=modules.exchange({array=array,text=text,barter=barter,
+    ui=function()return ui_rows()end,click=function(x,y)click(x,y,'left')end})
+local environment=modules.environment({array=array,item_reader=item_reader})
 local geography=modules.geography({text=text,array=array})
 local movement=modules.movement({array=array,text=text,bindings=bindings})
 local health=modules.health({array=array,text=text,same=function(a,b)return not next(wire.delta(a,b))end})
 local burden=modules.burden()
 local progress_reader=modules.progress({array=array,health=health,movement=movement,reports=read_reports})
-local item_reader=modules.items({array=array})
 local rest=modules.rest({array=array,bindings=bindings})
-local saving=modules.saving({array=array,text=text,bindings=bindings,
+local saving=modules.saving({array=array,text=text,
     input=function(key)gui.simulateInput(dfhack.gui.getCurViewscreen(true),key)end})
 local attack=modules.attack({array=array,bindings=bindings,copy=wire.clone,report_events=report_events})
 local input_registered=false
-local checkpoints=modules.checkpoints(wire)
-local lifetime=modules.session(checkpoints)
+local lifetime=modules.session()
 local session=lifetime.open()
 local pathing=modules.pathing({health=health,movement=movement,report_events=report_events,
     same=function(a,b)return not next(wire.delta(a,b))end,
@@ -60,7 +63,6 @@ local pathing=modules.pathing({health=health,movement=movement,report_events=rep
 
 local copy=wire.clone
 
-local ui_rows
 local function travel_info()
     local a=df.global.adventure
     local active=a.menu==df.ui_advmode_menu.Travel
@@ -267,6 +269,7 @@ local function navigation_info(s,with_leads)
             end)
             out.current_site.entrance=ok and entrance or {available=false,reason=tostring(entrance):sub(1,240)}
         end
+        if req.navigation_grid==false then out.site_grid_omitted=true else
         local r=current_site.realization
         local b=out.current_site.bounds
         local w,h=b.x2-b.x1+1,b.y2-b.y1+1
@@ -289,6 +292,7 @@ local function navigation_info(s,with_leads)
             end
             out.site_grid=grid
         else out.site_grid_unavailable='No supported surface travel grid is currently loaded' end
+        end
     end
     if with_leads then
         out.biome=geography.biome(s.position)
@@ -327,68 +331,7 @@ local function navigation_info(s,with_leads)
     return out
 end
 
-local function item_info(item,depth,budget,location,seen)
-    depth=depth or 0; budget=budget or {remaining=300}; seen=seen or {}
-    budget.remaining=budget.remaining-1
-    local quality=item:getQuality()
-    local out={id=item.id,description=text(dfhack.items.getReadableDescription(item)),
-        quality=quality,wear=optional(function() return item:getWear() end),
-        weight_raw=optional(function() return {whole=item.weight.whole,fraction=item.weight.fraction} end),
-        weight_computed=optional(function() return item.flags.weight_computed end),location=location}
-    for k,v in pairs(item_reader.storage(item))do out[k]=v end
-    if budget.brief then
-        local children=dfhack.items.getContainedItems(item)
-        if #children>0 or (out.capacity_volume_raw or 0)>0 then out.contents_shown_in_full_view=#children end
-        return out
-    end
-    out.type=df.item_type[item:getType()];out.subtype=item:getSubtype();out.stack_size=item:getStackSize()
-    out.material=optional(function() return text(dfhack.matinfo.decode(item):toString()) end)
-    out.material_ref=optional(function()
-        local m=dfhack.matinfo.decode(item);return {type=m.type,index=m.index,token=m:getToken()}
-    end)
-    out.temperature=optional(function()return {whole=item.temperature.whole,fraction=item.temperature.fraction}end)
-    out.volume_raw=optional(function() return item:getVolume() end)
-    local maker=optional(function() return item:getMakerRace() end)
-    if maker and maker>=0 then
-        out.fit={maker_race_id=maker,maker_species=optional(function() return text(df.global.world.raws.creatures.all[maker].name[0]) end),
-            wearable_now='unknown'}
-    end
-    local def=dfhack.items.getSubtypeDef(item:getType(),item:getSubtype())
-    if def then
-        out.definition={id=def.id,name=text(def.name)}
-        out.armor=optional(function() return {coverage=def.props.coverage,layer=def.props.layer,
-            layer_size=def.props.layer_size,layer_permit=def.props.layer_permit} end)
-        if item:getType()==df.item_type.WEAPON then
-            out.weapon={skill=df.job_skill[def.skill_melee],minimum_size=def.minimum_size,
-                two_handed_size=def.two_handed,attacks=array()}
-            for index,a in ipairs(def.attacks) do
-                out.weapon.attacks[#out.weapon.attacks+1]={attack_index=index,verb=text(a.verb_2nd),edged=a.edged,
-                    contact=a.contact,penetration=a.penetration,velocity_mult=a.velocity_mult}
-            end
-        end
-    end
-    if seen[item.id] then out.contents_truncated=true; return out end
-    seen[item.id]=true
-    local children=dfhack.items.getContainedItems(item)
-    -- A successfully read empty container is distinct from missing contents.
-    -- Preserve the empty list for container postconditions and character state.
-    if #children>0 or (out.capacity_volume_raw or 0)>0 then
-        out.contents=array()
-        for _,child in ipairs(children) do
-            if depth>=(budget.max_depth or 4) or budget.remaining<=0 then
-                out.contents_truncated=true;out.contents_total=#children;break
-            end
-            if budget.include_hidden or not child.flags.hidden then
-                local child_location=copy(location or {});child_location.container_id=item.id
-                child_location.mode=nil;child_location.body_part_id=nil
-                out.contents[#out.contents+1]=item_info(child,depth+1,budget,child_location,seen)
-            else
-                out.contents_truncated=true;out.contents_total=#children
-            end
-        end
-    end
-    return out
-end
+local item_info=item_reader.info
 
 local function item_location(item)
     local u=dfhack.world.getAdventurer()
@@ -416,10 +359,17 @@ local function item_location(item)
         if container then loc.container_id=container.id end
         return loc
     end
+    local loc=item_reader.building_location(root)
+    if loc then
+        local container=dfhack.items.getContainer(item)
+        if container then loc.container_id=container.id end
+        return loc
+    end
 end
 
-local function nearby_items(s,radius)
-    local out=array();local budget={remaining=500};local p=s.position
+local function nearby_items(s,radius,options)
+    options=options or {}
+    local out=array();local budget={remaining=500,catalog=options.catalog};local p=s.position
     if not p or not s.map_loaded then return out end
     radius=integer(radius or 20,0,50,'radius')
     local mx,my=dfhack.maps.getTileSize()
@@ -431,8 +381,12 @@ local function nearby_items(s,radius)
             local item=df.item.find(id)
             if item and item.flags.on_ground and not item.flags.hidden and item.pos.z==p.z
                 and item.pos.x>=x0 and item.pos.x<=x1 and item.pos.y>=y0 and item.pos.y<=y1
+                and (not options.item_type or df.item_type[item:getType()]==options.item_type)
                 and dfhack.maps.isTileVisible(item.pos.x,item.pos.y,item.pos.z) then
-                if budget.remaining<=0 then return out,true end
+                if budget.remaining<=0 or #out>=(options.limit or 500) then
+                    table.sort(out,function(a,b)return a.id<b.id end)
+                    return out,true
+                end
                 out[#out+1]=item_info(item,0,budget,{kind='ground',position=pos(item.pos),root_item_id=item.id})
             end
         end end
@@ -501,7 +455,7 @@ local interface_cache={}
 local function interfaces(s,ui)
     local current=interface_cache[s]
     if not current then
-        current={menu=menu_info(ui),conversation=interactions.conversation(ui),combat=interactions.combat(ui)}
+        current={menu=barter.menu() or menu_info(ui),conversation=interactions.conversation(ui),combat=interactions.combat(ui)}
         interface_cache[s]=current
     end
     return current
@@ -520,9 +474,14 @@ native_guard=function(s,ui)
         return g
     end
     out.menu=guarded_menu(menu)
+    if menu and menu.kind=='barter' then
+        out.barter=barter.guard()
+        if not out.barter.available then out.complete=false end
+    end
     out.conversation=guarded_menu(conversation)
     out.combat=guarded_menu(combat)
-    local known={inventory=menu and menu.kind=='inventory',option_list=menu and menu.kind=='option_list',
+    local known={barter=menu and menu.kind=='barter' and menu.available,
+        inventory=menu and menu.kind=='inventory',option_list=menu and menu.kind=='option_list',
         ['main.options']=menu and menu.kind=='options' and not menu.selection_unavailable,
         sleep=menu and menu.kind=='rest' and not menu.selection_unavailable,
         movement_options=menu and menu.kind=='movement' and not menu.selection_unavailable,
@@ -659,7 +618,7 @@ local function map_view(s,unit_target)
         end
     end
     local routing
-    if target and s.position and target.z==s.position.z then
+    if target and not req.map_fixed and s.position and target.z==s.position.z then
         routing=movement.route_window({x=mx,y=my},s.position,target,w,h)
         x0,y0,z,w,h=routing.origin.x,routing.origin.y,routing.origin.z,routing.width,routing.height
         routing.target=target
@@ -738,18 +697,10 @@ local function observe(ui,s,pending_only)
     if pending_only then return progress_reader(s,req,replaced) end
     local out={status=s,ui=ui,state_id=state_id(s,ui),effect_id=state_id(s,ui,true),
         input_guard={schema=2,native_complete=guard_cache[s].complete}}
-    if req.character_progress and s.can_move and guard_cache[s].complete then
-        out.checkpoint_guard=optional(function()
-            local u=dfhack.world.getAdventurer()
-            local path=guard_cache[s].character and guard_cache[s].character.path
-            if checkpoints.idle(u,path) then
-                return input_guard(s,ui,guard_cache[s],true,true)
-            end
-        end)
-    end
     if req.watch_units then out.watched_units=health.read(req.watch_units,s.mode=='adventure' and s.map_loaded) end
     if req.strike_state then out.strike_state=attack.state() end
     if req.native_path_state then out.native_path=pathing.state()end
+    if req.trade_watch then out.trade=exchange.read(req.trade_watch,interfaces(s,ui).menu)end
     if req.input_evidence_for then
         local receipt=session.receipts[req.input_evidence_for]
         local evidence=receipt and receipt.evidence
@@ -780,6 +731,9 @@ local function observe(ui,s,pending_only)
         -- Report history belongs to the world, not the loaded local map.
         -- Preserve its cursor during travel so returning cannot replay history.
         for k,v in pairs(read_reports(df.global.world.status.reports,req.reports_after,req.report_limit,replaced)) do out[k]=v end
+        if req.scene_reports then
+            out.scene_reports=read_reports(df.global.world.status.reports,nil,nil,replaced)
+        end
     end
     if s.map_loaded and s.mode=='adventure' then
         local target_id=req.target_unit_id or (req.action and req.action.unit_id)
@@ -798,6 +752,25 @@ local function observe(ui,s,pending_only)
                 {array=array,text=text,profile='progress'})
         end
         out.nearby_items,out.nearby_items_truncated=nearby_items(s,req.radius)
+        -- Furniture stock is absent from map_block.items. Resolve only the
+        -- dispatch's explicit targets; never expand an entire shop on every poll.
+        if req.target_item_ids then
+            if req.scene_reports then out.scene_nearby_items=copy(out.nearby_items)end
+            check(type(req.target_item_ids)=='table' and #req.target_item_ids<=128,'Invalid target_item_ids')
+            local seen={};for _,item in ipairs(out.nearby_items)do seen[item.id]=true end
+            local budget={remaining=128}
+            for _,id in ipairs(req.target_item_ids)do
+                id=integer(id,0,2147483647,'target item ID')
+                if not seen[id] then
+                    seen[id]=true
+                    local item=df.item.find(id)
+                    local loc=item and item_location(item)
+                    if loc and loc.kind=='building' then
+                        out.nearby_items[#out.nearby_items+1]=item_info(item,0,budget,loc)
+                    end
+                end
+            end
+        end
         out.menu=interfaces(s,ui).menu
         if out.menu and out.menu.kind=='inventory' then
             local wear=false;local eligible={}
@@ -831,7 +804,7 @@ local function observe(ui,s,pending_only)
     return finish_observation()
 end
 
-local function click(x,y,button)
+click=function(x,y,button)
     local g,e=df.global.gps,df.global.enabler
     integer(x,0,g.dimx-1,'x'); integer(y,0,g.dimy-1,'y')
     check(button=='left' or button=='right' or button=='middle','Invalid mouse button')
@@ -999,12 +972,19 @@ local function act()
         end
         check(#matches==1,'Expected exactly one visible text match; found '..#matches)
         a={type='click',x=matches[1].x,y=matches[1].y,button=a.button}
-    elseif a.type=='edit_text' then
-        check(a.field=='save_name','Unknown native text field')
-        saving.validate_name(a.value)
-        local current=saving.menu(ui)
-        check(current and current.mode=='filename' and not current.selection_unavailable,
-            'No verified native save-name field is active')
+    elseif a.type=='trade_submit' then
+        check(not s.modal and s.screen=='viewscreen_dungeonmodest'
+            and #s.open_panels==1 and s.open_panels[1]=='barter',
+            'The native trade interface must be the only active panel without a prompt')
+        exchange.plan(a)
+    elseif a.type=='trade_shop' then
+        check(not s.modal,'Dismiss the current prompt before choosing a trade catalog')
+        check(s.screen=='viewscreen_dungeonmodest' and #s.open_panels==1 and s.open_panels[1]=='barter',
+            'The native trade interface must be the only active panel')
+        barter.validate_shop(a)
+    elseif a.type=='save_native' then
+        check(s.can_move,'Quicksave requires the local adventure input boundary')
+        saving.validate(a)
     elseif a.type=='text' then
         check(type(a.text)=='string' and #a.text>0 and #a.text<=200,'text must be 1..200 ASCII bytes')
         check(not a.text:find('[^ -~]'),'text only accepts printable ASCII; use key for Enter/Escape')
@@ -1064,8 +1044,9 @@ local function act()
         elseif scroll_menu then receipt.ui_adjustment=bindings.scroll(scroll_menu,scroll_option)
         elseif key then gui.simulateInput(dfhack.gui.getCurViewscreen(true),key)
         elseif a.type=='click' then click(a.x,a.y,a.button or 'left')
-        elseif a.type=='edit_text' then
-            receipt.ui_adjustment={field=a.field,native_key_inputs=saving.edit(a.value,ui)}
+        elseif a.type=='trade_shop' then receipt.ui_adjustment=barter.select_shop(a)
+        elseif a.type=='trade_submit' then receipt.ui_adjustment=exchange.submit(a)
+        elseif a.type=='save_native' then receipt.ui_adjustment=saving.submit(a)
         elseif a.type=='resume' then -- no input
         else
             for i=1,#a.text do
@@ -1114,6 +1095,8 @@ local function dispatch()
     check(type(req)=='table','Request must be an object')
     if req.op=='capabilities' then return runtime.capabilities()
     elseif req.op=='status' then return status()
+    elseif req.op=='load_save' then return modules.load_save.start(req.name)
+    elseif req.op=='load_status' then return {load=modules.load_save.status(),status=status()}
     elseif req.op=='unit' then
         local id=integer(req.unit_id,0,2147483647,'unit_id')
         local ui=ui_rows();local s=status(ui)
@@ -1132,6 +1115,12 @@ local function dispatch()
         return {status=s,state_id=state_id(s,ui),navigation=navigation_info(s,true)}
     elseif req.op=='locate' then
         return geography.locate(req.kind,req.id)
+    elseif req.op=='barter' then
+        local s=status()
+        check(s.mode=='adventure','Trade goods require adventure mode')
+        local out=barter.goods(req.side or 'take',req.item_type,integer(req.limit or 20,1,500,'limit'))
+        out.state_id=state_id(s,ui_rows())
+        return out
     elseif req.op=='shops' then
         local s=status()
         local site,meta
@@ -1141,7 +1130,8 @@ local function dispatch()
         else site,meta=geography.current_site(s)end
         if not site then return {available=false,site_query=meta,reason='No requested/current site is loaded'}end
         check(req.shop_type==nil or type(req.shop_type)=='string','shop_type must be a native token')
-        local out=geography.shops(site,navigation_position(s),integer(req.limit or 20,1,100,'limit'),req.shop_type)
+        check(req.stock==nil or type(req.stock)=='boolean','stock must be boolean')
+        local out=geography.shops(site,navigation_position(s),integer(req.limit or 20,1,100,'limit'),req.shop_type,req.stock)
         out.site={id=site.id,name=text(dfhack.translation.translateName(site.name,true))}
         return out
     elseif req.op=='world_sites' then
@@ -1194,11 +1184,11 @@ local function dispatch()
             local prior=lifetime.lookup(session,resume_id)
             check(prior,'Unknown dispatch (game restarted or receipt expired)')
             check(not prior.resumed_by,'Dispatch was already resumed; use its latest continuation')
-            local resume_reason=lifetime.resume_reason(prior,session,view.status,view.checkpoint_guard)
+            local resume_reason=lifetime.resume_reason(prior,session,view.status)
             check(not resume_reason,resume_reason)
             check(not session.active_dispatch or session.active_dispatch==resume_id,'Another dispatch is active')
             workflow=copy(prior.workflow)
-            last_action_id=not prior.restored_epoch and prior.last_action_id or nil
+            last_action_id=prior.last_action_id
         else
             local active=session.active_dispatch and session.dispatches[session.active_dispatch]
             check(not active or active.interrupted,'Another dispatch is active; interrupt or resume it first')
@@ -1206,9 +1196,6 @@ local function dispatch()
         local record={request=signature,workflow=workflow,save=view.status.save,world_epoch=session.world_epoch,
             adventurer_id=view.status.adventurer_id,last_action_id=last_action_id,
             interrupted=session.interrupt_requests[req.request_id] or false}
-        local persisted,why=lifetime.persist_begin(session,req.request_id,record,resume_id)
-        check(persisted,
-            'Cannot invalidate the saved predecessor before resuming: '..tostring(why))
         session.interrupt_requests[req.request_id]=nil
         session.dispatches[req.request_id]=record
         if resume_id then session.dispatches[resume_id].resumed_by=req.request_id end
@@ -1244,14 +1231,8 @@ local function dispatch()
         record.workflow_revision=(record.workflow_revision or 0)+1
         record.view=final_view;record.compact=req.compact and copy(req.compact)
         record.snapshot=nil
-        local persisted,why=lifetime.persist_finish(session,req.action_id,record,final_view,session.receipts[record.last_action_id])
-        if persisted==false then record.checkpoint_unavailable=why end
-        if record.checkpoint_unavailable then
-            summary.checkpoint_unavailable=record.checkpoint_unavailable
-            if record.compact then record.compact.checkpoint_unavailable=record.checkpoint_unavailable end
-        end
         if session.active_dispatch==req.action_id then session.active_dispatch=nil end
-        return {recorded=true,workflow_revision=record.workflow_revision,checkpoint_unavailable=record.checkpoint_unavailable}
+        return {recorded=true,workflow_revision=record.workflow_revision}
     elseif req.op=='dispatch_details' then
         check(type(req.dispatch_id)=='string' and #req.dispatch_id>0,'dispatch_id must be nonempty')
         local section=req.section or 'events'
@@ -1261,7 +1242,7 @@ local function dispatch()
         if not record then return {available=false,dispatch_id=req.dispatch_id,
             reason='Unknown or expired dispatch; the native session retains the last 128 dispatches'} end
         if not record.dispatch then return {available=false,dispatch_id=req.dispatch_id,
-            reason=record.restore_reason or 'Dispatch has no final receipt yet; execution is not affected by this query'} end
+            reason='Dispatch has no final receipt yet; execution is not affected by this query'} end
         local value=section=='summary' and record.dispatch or section=='full' and record.view
             or section=='compact' and record.compact or record.dispatch[section]
         if section=='full' and not value then value={dispatch=record.dispatch,observation_unavailable=true} end
@@ -1276,12 +1257,6 @@ local function dispatch()
             if #session.interrupt_order>128 then session.interrupt_requests[table.remove(session.interrupt_order,1)]=nil end
         end
         return {dispatch_id=req.dispatch_id,interruption_requested=true,active=session.active_dispatch==req.dispatch_id}
-    elseif req.op=='record_dispatch' then
-        local receipt=session.receipts[req.action_id]
-        check(receipt,'Unknown dispatch receipt (game restarted or receipt expired)')
-        check(type(req.dispatch)=='table','dispatch result must be an object')
-        receipt.dispatch=req.dispatch
-        return {recorded=true}
     elseif req.op=='poll' then
         local ui=ui_rows();local s=status(ui)
         local receipt=session.receipts[req.action_id or session.pending]
@@ -1305,13 +1280,37 @@ local function dispatch()
         end
         return response
     elseif req.op=='items' then
-        local s=status();local items,truncated=nearby_items(s,req.radius)
-        return {state_id=state_id(s,ui_rows()),items=items,truncated=truncated,position=s.position}
+        check(req.item_view==nil or req.item_view=='concise' or req.item_view=='full','Invalid item view')
+        check(req.item_type==nil or type(req.item_type)=='string' and type(df.item_type[req.item_type])=='number',
+            'Unknown native item type')
+        local catalog=req.item_view=='concise'
+        local limit=integer(req.limit or 100,1,500,'limit')
+        local s=status()
+        local function finish_items(out)
+            out.status={world_epoch=s.world_epoch}
+            if catalog then out.omitted='Material display label, temperature, volume, subtype definitions and weapon attacks: items --view full or item ID' end
+            return out
+        end
+        if req.building_id~=nil then
+            local b=df.building.find(integer(req.building_id,0,2147483647,'building_id'))
+            local out=item_reader.building_contents(b,integer(req.limit or 100,1,500,'limit'),req.item_type)
+            out.items=array()
+            local budget={remaining=500,catalog=catalog}
+            for _,entry in ipairs(out.entries)do
+                if budget.remaining<=0 then out.truncated=true;break end
+                out.items[#out.items+1]=item_info(df.item.find(entry.id),0,budget,entry.location)
+            end
+            out.entries=nil
+            return finish_items(out)
+        end
+        local items,truncated=nearby_items(s,req.radius,{catalog=catalog,limit=limit,item_type=req.item_type})
+        return finish_items({state_id=state_id(s,ui_rows()),items=items,truncated=truncated,position=s.position,
+            scope='Visible ground roots and their visible contents; type filter applies to roots. Furniture: items --building ID'})
     elseif req.op=='item' then
         integer(req.item_id,0,2147483647,'item_id')
         local item=df.item.find(req.item_id)
         local location=item and item_location(item)
-        check(location,'Item is not carried by the adventurer or on visible ground')
+        check(location,'Item is not carried by the adventurer, on visible ground, or in visible furniture storage')
         return item_info(item,0,nil,location)
     elseif req.op=='keys' then
         local out=array()

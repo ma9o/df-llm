@@ -70,6 +70,18 @@ test('unrelated derived class payloads are not read',function()
     local b=setmetatable(building(2),{__index=function()error('unrelated member read')end})
     local r=m.building(b);assert(r.type=='Statue' and not r.unavailable)
 end)
+test('scene furniture summaries retain stock facts without the individual item list',function()
+    env.df.building_actual={is_instance=function()return true end}
+    local reader=assert(load(source,'storage-summary-fixture','t',env))({array=function()return {}end,
+        item_reader={building_contents=function(b,limit)
+            assert(b.id==0 and limit==0)
+            return {available=true,item_count=138,counts={ARMOR=2},omitted_hidden=0,
+                matched=138,entries={},truncated=true}
+        end}})
+    local r=reader.building(building(2))
+    assert(r.storage.available and r.storage.item_count==138 and r.storage.counts.ARMOR==2)
+    assert(not r.storage.entries and not r.storage.matched and not r.storage.truncated)
+end)
 test('liquid regions retain material boundaries, depths and actual nearest tiles',function()
     local tiles={
         {position={x=1,y=0,z=0},kind='water',depth=1},

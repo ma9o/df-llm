@@ -122,7 +122,7 @@ def active_workflow(workflow):
 def observation_args(workflow):
     leaf = active_workflow(workflow)
     args = {}
-    item_actions = {"pickup", "drop", "stow", "equip", "wield", "remove"}
+    item_actions = {"pickup", "drop", "stow", "equip", "wield", "remove", "trade"}
     root_actions = workflow["action"].get("actions", [workflow["action"]])
     if any(a["type"] in item_actions for a in root_actions):
         args["receipt_state"] = True
@@ -130,6 +130,12 @@ def observation_args(workflow):
     # sequence's resulting load assessment.
     if leaf is None:
         return args
+    if leaf["action"]["type"] in item_actions - {"trade"}:
+        action = leaf["action"]
+        args["target_item_ids"] = sorted(
+            {action["item_id"], *action.get("replace", [])}
+            | ({action["container_id"]} if "container_id" in action else set())
+        )
     if leaf["action"]["type"] == "save_game":
         args["save_name"] = leaf["action"]["name"]
     if leaf["action"]["type"] in ("sleep", "rest"):
@@ -137,9 +143,19 @@ def observation_args(workflow):
     if "unit_id" in leaf["action"]:
         args["target_unit_id"] = leaf["action"]["unit_id"]
     ctx = leaf.get("context", {})
+    if leaf["action"]["type"] == "trade":
+        args["trade_watch"] = deepcopy(leaf["action"])
+        if submitted := ctx.get("trade_submitted"):
+            args["trade_watch"].update(verify=True, signatures=sorted(submitted["inventory"]))
     if leaf["action"]["type"] == "strike":
         args["strike_state"] = True
-    if leaf["action"]["type"] in item_actions | LOCAL_TARGET_ACTIONS | {"talk", "combat", "strike"}:
+    if leaf["action"]["type"] in item_actions | LOCAL_TARGET_ACTIONS | {
+        "talk",
+        "combat",
+        "strike",
+        "move",
+        "open_trade",
+    }:
         args["native_path_state"] = True
     evidence = ctx.get("input_evidence_for") or ctx.get("path_evidence_for")
     if evidence:

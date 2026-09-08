@@ -18,6 +18,7 @@ READS = {
     "items",
     "navigation",
     "shops",
+    "barter",
     "locate",
     "world_scan",
     "session",

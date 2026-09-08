@@ -61,6 +61,7 @@ def scene(name, carried=(), ground=(), *, choices=None, x=1, blood=1000, reports
         "state_id": "state-" + name,
         "effect_id": name,
         "status": {
+            "world_epoch": "fixture-world",
             "can_move": choices is None,
             "ready_for_input": True,
             "adventurer_id": 1,
@@ -85,26 +86,6 @@ def scene(name, carried=(), ground=(), *, choices=None, x=1, blood=1000, reports
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_persistence_failure_is_reported_without_replaying_a_completed_game_input(self):
-        for output in ("full", "compact"):
-            bridge = Bridge(scene("before"), [scene("after")])
-
-            def send(request, bridge=bridge):
-                result = bridge(request)
-                if request["op"] == "finish_dispatch":
-                    result["checkpoint_unavailable"] = "World storage unavailable"
-                return result
-
-            client = Client(port=1)
-            with patch.object(client, "request", side_effect=send):
-                response = client.act(
-                    {"type": "wait"}, execution={"mode": "complete"}, result_format=output
-                )
-            result = response["dispatch"] if output == "full" else response
-            self.assertEqual(result["outcome"], "completed")
-            self.assertEqual(result["checkpoint_unavailable"], "World storage unavailable")
-            self.assertEqual(len(bridge.inputs), 1)
-
     def test_large_controller_budget_keeps_completion_limits_and_injury_checks(self):
         def walking_scene(x, *, blood=1000):
             value = scene(str(x), x=x, blood=blood)
@@ -399,7 +380,9 @@ class WorkflowTests(unittest.TestCase):
             if rules.get("new_wounds"):
                 final["adventurer"]["health"]["wounds"] = 1
             b = Bridge(scene("before"), [final])
-            r = self.client(b).act({"type": "wait"}, execution={"interrupt_on": rules})
+            r = self.client(b).act(
+                {"type": "key", "key": "A_SHORT_WAIT"}, execution={"interrupt_on": rules}
+            )
             self.assertEqual(r["dispatch"]["outcome"], "interrupted")
 
     def test_resume_retains_reports_without_retriggering_an_already_reported_interruption(self):
@@ -559,7 +542,7 @@ class WorkflowTests(unittest.TestCase):
         arrived = {"id": 21, "name": "Creature B", "position": {"x": 0, "y": 1, "z": 0}}
         b = Bridge(scene("before", units=[old]), [scene("after", units=[moved, arrived])])
         r = self.client(b).act(
-            {"type": "wait"},
+            {"type": "key", "key": "A_SHORT_WAIT"},
             execution={"interrupt_on": {"new_visible_units": True}},
             result_format="compact",
         )
@@ -612,5 +595,5 @@ class WorkflowTests(unittest.TestCase):
                 {"report_types": "COMBAT"},
             ):
                 with self.assertRaises(ValueError):
-                    c.act({"type": "wait"}, execution={"interrupt_on": rules})
+                    c.act({"type": "key", "key": "A_SHORT_WAIT"}, execution={"interrupt_on": rules})
             request.assert_not_called()

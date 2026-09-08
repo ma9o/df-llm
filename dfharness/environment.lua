@@ -76,6 +76,15 @@ function M.building(b)
             return flags(b.door_flags,{'closed','forbidden','operated_by_mechanisms'})
         end)
     end
+    if h.item_reader and df.building_actual:is_instance(b) then
+        local storage=h.item_reader.building_contents(b,0)
+        -- A scene needs the count, not every object on every table. The explicit
+        -- items query filters native entries before reading detailed profiles.
+        if not storage.available or storage.item_count>0 or storage.omitted_hidden>0 then
+            storage.entries=nil;storage.matched=nil;storage.truncated=storage.scan_truncated==true
+            out.storage=storage
+        end
+    end
     if #out.unavailable==0 then out.unavailable=nil end
     return out
 end

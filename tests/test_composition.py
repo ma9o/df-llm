@@ -221,7 +221,7 @@ class CompositionTests(unittest.TestCase):
 
     def test_validation_rejects_raw_input_nested_sequences_and_oversized_expansion(self):
         for action in (
-            sequence({"type": "wait"}),
+            sequence({"type": "key", "key": "A_SHORT_WAIT"}),
             sequence(sequence(STAND)),
             sequence(),
             {"type": "converse", "unit_ids": [2, 2], "topics": ["GREET"]},

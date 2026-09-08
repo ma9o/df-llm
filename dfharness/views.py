@@ -89,6 +89,26 @@ def landmark_rows(landmarks):
 
 
 def reading_menu(menu, focus=None):
+    if menu.get("kind") == "barter":
+        return pick(
+            menu,
+            (
+                "kind",
+                "open",
+                "available",
+                "unit_id",
+                "trader_id",
+                "zone",
+                "personal",
+                "demand_only",
+                "rebuilding",
+                "editing",
+                "goods",
+                "currency",
+                "draft",
+                "selection_unavailable",
+            ),
+        )
     out = pick(
         menu,
         (

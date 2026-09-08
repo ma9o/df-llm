@@ -16,7 +16,7 @@ class ClientTests(unittest.TestCase):
             patch.object(c, "request", side_effect=error),
             self.assertRaises(DispatchError) as caught,
         ):
-            c.act({"type": "wait"})
+            c.act({"type": "key", "key": "A_SHORT_WAIT"})
         self.assertIsNone(caught.exception.resume_action)
         self.assertIs(caught.exception.input_sent, False)
 
@@ -26,7 +26,7 @@ class ClientTests(unittest.TestCase):
         )
         c = Client(port=1, execution={"mode": "complete"})
         with patch.object(c, "request", side_effect=bridge):
-            r = c.act({"type": "wait"})
+            r = c.act({"type": "key", "key": "A_SHORT_WAIT"})
         self.assertEqual(r["outcome"], "completed")
         self.assertFalse(any(call["op"] == "observe" for call in bridge.calls))
         self.assertTrue(all(call.get("observe") for call in bridge.calls if call["op"] == "poll"))
@@ -39,7 +39,10 @@ class ClientTests(unittest.TestCase):
 
     def test_action_is_not_retried_if_poll_connection_fails(self):
         c = Client(port=1)
-        bridge = Bridge({"status": {}, "ui": {}}, [{"status": {}, "ui": {}}])
+        bridge = Bridge(
+            {"status": {"can_move": True, "position": {"x": 1, "y": 1, "z": 0}}, "ui": {}},
+            [{"status": {}, "ui": {}}],
+        )
 
         def poll(game, request):
             if game.inputs:
@@ -69,7 +72,7 @@ class ClientTests(unittest.TestCase):
 
         bridge.poll_hook = poll
         with patch.object(c, "request", side_effect=bridge), patch("dfharness.dispatch.time.sleep"):
-            result = c.act({"type": "wait"}, request_id="abc")
+            result = c.act({"type": "key", "key": "A_SHORT_WAIT"}, request_id="abc")
         self.assertEqual(polls, 3)
         self.assertEqual(len(bridge.inputs), 1)
         self.assertEqual(result["dispatch_id"], "abc")

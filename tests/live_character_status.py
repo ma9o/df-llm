@@ -21,16 +21,18 @@ def native_fixtures(port):
         ("native_ui.lua", "native_ui.lua"),
         ("wire.lua", "wire.lua"),
         ("session.lua", "session.lua"),
-        ("checkpoints.lua", "checkpoints.lua"),
         ("runtime.lua", "runtime.lua"),
         ("screen.lua", "screen.lua"),
         ("hud.lua", "../tests/hud_reference.lua"),
         ("burden.lua", "burden.lua"),
         ("entry.lua", "entry.lua"),
         ("items.lua", "items.lua"),
+        ("barter.lua", "barter.lua"),
+        ("exchange.lua", "exchange.lua"),
         ("rest.lua", "rest.lua"),
         ("aim.lua", "aim.lua"),
-        ("saving.lua", "saving.lua"),
+        ("saving.lua", "quicksave.lua"),
+        ("load-save.lua", "load-save.lua"),
         ("health.lua", "health.lua"),
         ("unit.lua", "unit.lua"),
         ("progress.lua", "progress.lua"),
@@ -51,7 +53,6 @@ def native_fixtures(port):
     ):
         fixture = Path(__file__).with_name(fixture_name).read_text()
         extra_readers = {
-            "checkpoints.lua": ["wire.lua"],
             "interactions.lua": ["native_ui.lua"],
             "movement.lua": ["native_ui.lua"],
             "aim.lua": ["native_ui.lua"],

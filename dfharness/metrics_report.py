@@ -44,8 +44,9 @@ def summarize(rows, fields):
     }
 
 
-def read_logs(paths, run=None):
+def read_logs(paths, run=None, tokenizer=None):
     rows, seen = [], {}
+    payloads = {}
     incomplete = duplicates = 0
     for path in paths:
         path = Path(path)
@@ -58,6 +59,16 @@ def read_logs(paths, run=None):
                         incomplete += 1
                         continue
                     raise ValueError(f"Invalid measurement JSONL at {path}:{number}") from exc
+                if isinstance(row, dict) and "request" in row and "response" in row:
+                    continue  # Full bridge trace; never count internal traffic as LLM tokens.
+                payload = None
+                if isinstance(row, dict) and row.get("kind") == "controller_payload":
+                    payload = (row.pop("input", None), row.pop("output", None))
+                    if not isinstance(payload[0], str) or (
+                        payload[1] is not None and not isinstance(payload[1], str)
+                    ):
+                        raise ValueError(f"Invalid controller payload at {path}:{number}")
+                    row["kind"] = "interaction"
                 if (
                     not isinstance(row, dict)
                     or row.get("schema_version") != 1
@@ -70,6 +81,10 @@ def read_logs(paths, run=None):
                     raise ValueError(
                         f"Invalid measurement record at {path}:{number}; use audit-log for episode logs"
                     )
+                if payload is not None:
+                    if row["id"] in payloads and payloads[row["id"]] != payload:
+                        raise ValueError(f"Conflicting controller payload at {path}:{number}")
+                    payloads[row["id"]] = payload
                 for field in FIELDS:
                     value = row.get(field)
                     if value is not None and (
@@ -88,6 +103,22 @@ def read_logs(paths, run=None):
                 seen[row["id"]] = row
                 if run is None or row["run"] == run:
                     rows.append(row)
+    if tokenizer:
+        from importlib.metadata import version
+
+        from .metrics_tokens import tokenizer as load_tokenizer
+
+        encoding = load_tokenizer(tokenizer)
+        for row in rows:
+            if row["kind"] != "interaction":
+                continue
+            payload = payloads.get(row["id"])
+            if payload is None:
+                continue  # Historical counts retain their original encoding; unknown stays unknown.
+            for key, value in zip(("input_tokens", "output_tokens"), payload, strict=True):
+                row[key] = len(encoding.encode_ordinary(value)) if value is not None else None
+            row["tokenizer"] = tokenizer
+            row["tokenizer_version"] = version("tiktoken")
     return rows, {"incomplete_final_lines": incomplete, "duplicate_records": duplicates}
 
 
@@ -99,8 +130,8 @@ def group_key(row):
     )
 
 
-def analyze(paths, run=None, idle_gap=120):
-    rows, reading = read_logs(paths, run)
+def analyze(paths, run=None, idle_gap=120, tokenizer=None):
+    rows, reading = read_logs(paths, run, tokenizer)
     interactions = [row for row in rows if row["kind"] == "interaction"]
     rpcs = [row for row in rows if row["kind"] == "rpc"]
     groups, transport, token_groups = defaultdict(list), defaultdict(list), defaultdict(list)
@@ -206,17 +237,17 @@ def compare(current, baseline):
     }
 
 
-def report(paths, baseline=None, run=None, idle_gap=120):
-    current = analyze(paths, run, idle_gap)
+def report(paths, baseline=None, run=None, idle_gap=120, tokenizer=None):
+    current = analyze(paths, run, idle_gap, tokenizer)
     result = {
         "format": "interaction_metrics",
         "schema_version": 1,
         **current,
         "measurement": {
             "tokens": "Exact counts under the named local tokenizer, from the harness perspective: request=input, returned payload=output. Not provider usage; prompts, reasoning and controller thinking time are outside this boundary.",
-            "payload": "Canonical Python arguments or CLI argv plus stdin; output is canonical Python JSON or actual CLI text. Historical records retain their original surface and format. No payload text is stored in this log.",
-            "duration_ms": "Monotonic time through response production (including CLI output flush); tokenizer/log work follows. Python excludes client construction; CLI excludes interpreter/import startup.",
-            "measurement_ms": "Serialization and token counting, including a cold tokenizer load; excludes JSONL append. Reported separately from response duration.",
+            "payload": "Canonical Python arguments or CLI argv plus stdin; output is canonical Python JSON or actual CLI text. Metrics contain no payloads. Explicit --log captures controller payloads for offline token counting; uncaptured tokens remain unknown.",
+            "duration_ms": "Monotonic time through response production (including CLI output flush). Python excludes client construction; CLI excludes interpreter/import startup.",
+            "measurement_ms": "Final serialization, excluding JSONL append. Older records include runtime tokenizer cost; new calls never load a tokenizer.",
             "rpc": "Lua source and returned command text bytes, excluding protobuf framing. Every Client.request RPC is recorded, including readiness polls and transport errors. No token counts for internal traffic.",
             "p95": "Nearest-rank percentile. Null counts are unmeasured, never zero. Process termination can leave RPC traces without a completed interaction.",
             "episodes": "All calls split per run after idle_gap_seconds or a label change. Explicit labels retain a segment number across splits; idle time between segments is excluded. One controller per run. Wall time covers first recorded start to last measured finish only; it excludes unseen instruction delivery, final deliberation and process startup.",
@@ -227,7 +258,7 @@ def report(paths, baseline=None, run=None, idle_gap=120):
         },
     }
     if baseline:
-        before = analyze(baseline, idle_gap=idle_gap)
+        before = analyze(baseline, idle_gap=idle_gap, tokenizer=tokenizer)
         result["baseline"] = before
         result["comparison"] = compare(current, before)
     return result

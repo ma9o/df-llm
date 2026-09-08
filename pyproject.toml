@@ -7,9 +7,10 @@ authors = [
     { name = "ma9o" },
 ]
 requires-python = ">=3.12"
-dependencies = [
-    "tiktoken>=0.12,<1",
-]
+dependencies = []
+
+[project.optional-dependencies]
+analysis = ["tiktoken>=0.12,<1"]
 
 [project.scripts]
 dfctl = "dfharness.cli:main"
@@ -20,6 +21,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "tiktoken>=0.12,<1",
     "ruff>=0.16.6,<0.17",
     "ty>=0.0.78,<0.1",
     "vulture>=2.14,<3",
