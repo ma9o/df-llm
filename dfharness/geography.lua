@@ -63,6 +63,53 @@ function M.biome(position)
     if not ok then out.reason=tostring(err):sub(1,240)end
     return out
 end
+function M.shops(site,position,limit,shop_type)
+    local out={available=false,source='site.realization.buildings',entries=h.array(),
+        scope='Native site records; a shop location does not prove a merchant or stock is present'}
+    local ok,err=pcall(function()
+        if shop_type then assert(type(df.site_shop_type[shop_type])=='number','Unknown native shop type: '..shop_type)end
+        local realization=site.realization
+        assert(realization,'Site realization is not loaded')
+        local list=realization.buildings
+        out.total_buildings=#list;out.scanned=0
+        for index,b in ipairs(list)do
+            if index>=8192 then out.scan_truncated=true;break end
+            out.scanned=out.scanned+1
+            local kind=df.site_realization_building_type[b.type]
+            assert(type(kind)=='string','Unknown native site building type')
+            if kind=='shop_house' or kind=='market_square' then
+                local info=b.building_info
+                local class=df['site_realization_building_info_'..kind..'st']
+                assert(info and class and class:is_instance(info),'Invalid native shop info tag')
+                local token=df.site_shop_type[info.type]
+                assert(type(token)=='string','Unknown native shop type')
+                if shop_type and token~=shop_type then goto continue end
+                local p={x=math.floor((site.global_min_x*48+(b.min_x+b.max_x)/2)/16),
+                    y=math.floor((site.global_min_y*48+(b.min_y+b.max_y)/2)/16),z=0}
+                local entry={id=b.id,type=token,building_type=kind,travel_position=p}
+                if kind=='shop_house' then entry.name=h.text(dfhack.translation.translateName(info.name,true))end
+                if b.civzone_id>=0 then
+                    entry.zone_id=b.civzone_id
+                    local zone=df.building.find(b.civzone_id)
+                    if zone then entry.position={x=zone.centerx,y=zone.centery,z=zone.z}end
+                end
+                if position then entry.distance=math.max(math.abs(p.x-position.x),math.abs(p.y-position.y))end
+                out.entries[#out.entries+1]=entry
+            end
+            ::continue::
+        end
+        table.sort(out.entries,function(a,b)
+            if a.distance~=b.distance then return a.distance<b.distance end
+            return a.id<b.id
+        end)
+        out.matched=#out.entries
+        while #out.entries>limit do table.remove(out.entries)end
+        out.truncated=#out.entries<out.matched or out.scan_truncated==true
+        out.available=true
+    end)
+    if not ok then out.reason=tostring(err):sub(1,240)end
+    return out
+end
 function M.locate(kind,id)
     local out={available=false,kind=kind,id=id,source='gui/adv-finder',
         scope='World records, not character knowledge or visibility; locations can be historical'}

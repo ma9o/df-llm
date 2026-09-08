@@ -40,7 +40,7 @@ local runtime=runtime_reader({array=array,text=text,bindings=bindings,calculatio
 local screen_reader=modules.screen({array=array,glyph=glyph})
 local read_reports=modules.reports({array=array,text=text})
 local environment=modules.environment({array=array})
-local geography=modules.geography({text=text})
+local geography=modules.geography({text=text,array=array})
 local movement=modules.movement({array=array,text=text,bindings=bindings})
 local health=modules.health({array=array,text=text,same=function(a,b)return not next(wire.delta(a,b))end})
 local burden=modules.burden()
@@ -219,11 +219,15 @@ local function unit_info(u)
         position=x and {x=x,y=y,z=z} or nil, alive=dfhack.units.isAlive(u)}
 end
 
-local function navigation_info(s,with_leads)
+local function navigation_position(s)
     local p=s.travel and s.travel.position
     if not (s.travel and s.travel.active) and s.position and s.map_origin then
         p={x=math.floor((s.map_origin.x+s.position.x)/16),y=math.floor((s.map_origin.y+s.position.y)/16)}
     end
+    return p
+end
+local function navigation_info(s,with_leads)
+    local p=navigation_position(s)
     local out={position=p,coordinates='travel tiles (16 local tiles)',travel=s.travel}
     local function name(n) return text(dfhack.translation.translateName(n,true)) end
     local function site_info(site)
@@ -1128,6 +1132,18 @@ local function dispatch()
         return {status=s,state_id=state_id(s,ui),navigation=navigation_info(s,true)}
     elseif req.op=='locate' then
         return geography.locate(req.kind,req.id)
+    elseif req.op=='shops' then
+        local s=status()
+        local site,meta
+        if req.site_id~=nil then
+            site=df.world_site.find(integer(req.site_id,0,2147483647,'site_id'))
+            meta={available=true,present=site~=nil,source='world_site.find'}
+        else site,meta=geography.current_site(s)end
+        if not site then return {available=false,site_query=meta,reason='No requested/current site is loaded'}end
+        check(req.shop_type==nil or type(req.shop_type)=='string','shop_type must be a native token')
+        local out=geography.shops(site,navigation_position(s),integer(req.limit or 20,1,100,'limit'),req.shop_type)
+        out.site={id=site.id,name=text(dfhack.translation.translateName(site.name,true))}
+        return out
     elseif req.op=='world_sites' then
         check(req.catalog==nil or type(req.catalog)=='boolean','catalog must be boolean')
         return modules.world_scan({array=array,text=text}).snapshot(session.world_epoch,req.catalog,function()

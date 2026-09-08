@@ -207,6 +207,21 @@ class Client:
         return self.request({"op": "navigation", "limit": limit, "ui_mode": "native"})
 
     @measured
+    def shops(self, shop_type=None, *, site_id=None, limit=20):
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("shop limit must be an integer in [1, 100]")
+        if site_id is not None and (type(site_id) is not int or not 0 <= site_id <= 2147483647):
+            raise ValueError("site_id must be a nonnegative native ID")
+        if shop_type is not None and (not isinstance(shop_type, str) or not shop_type.strip()):
+            raise ValueError("shop_type must be a native shop type token")
+        request = {"op": "shops", "limit": limit}
+        if site_id is not None:
+            request["site_id"] = site_id
+        if shop_type is not None:
+            request["shop_type"] = shop_type
+        return self.request(request)
+
+    @measured
     def locate(self, kind, id):
         if kind not in ("figure", "artifact") or type(id) is not int or not 0 <= id <= 2147483647:
             raise ValueError("locate requires kind=figure/artifact and a nonnegative native ID")

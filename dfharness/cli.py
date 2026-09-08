@@ -204,6 +204,12 @@ def parser():
         "navigation", help="Read travel coordinates, native site grid, and character-known leads"
     )
     navigation.add_argument("--limit", type=int, default=20)
+    shops = subs.add_parser("shops", help="Find native shops in the current or specified site")
+    shops.add_argument(
+        "--type", dest="shop_type", help="Native type, e.g. Armorsmith or FoodImports"
+    )
+    shops.add_argument("--site-id", type=int)
+    shops.add_argument("--limit", type=int, default=20)
     locate = subs.add_parser(
         "locate", help="Locate a historical figure or artifact in DFHack world records"
     )
@@ -655,6 +661,8 @@ def execute(args, client=None):
                 result = client.settings(update, reset=args.reset)
             elif args.command == "navigation":
                 result = client.navigation(args.limit)
+            elif args.command == "shops":
+                result = client.shops(args.shop_type, site_id=args.site_id, limit=args.limit)
             elif args.command == "session":
                 result = client.session(args.limit)
             elif args.command == "locate":

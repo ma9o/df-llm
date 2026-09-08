@@ -703,6 +703,15 @@ target menu is open. Defense, wrestling, charge, multiattack and ranged completi
 remain unsupported. Readers inspect only fields owned by the active native mode;
 unknown modes retain ASCII text and an explicit limitation.
 
+`shops --type Armorsmith --limit 3` (Python: `client.shops("Armorsmith", limit=3)`)
+reads native shop records in the current site. `--site-id` selects another site
+whose realization is loaded. Types are exact native `site_shop_type` tokens,
+such as `FoodImports`, `GeneralImports`, `Carpenter` and `LeatherGoods`. Results
+give travel destinations and loaded zone centers, sorted by distance; missing
+realizations, unknown tags and bounded/truncated scans remain explicit. This
+dedicated read avoids retransmitting the site grid or inventory. A location
+does not prove a shopkeeper or stock is present.
+
 `navigation` / `df_navigation` returns current travel coordinates, the native
 site travel grid, and character-known group/beast rumors sorted by distance.
 Local current-site identity comes from `dfhack.world.getCurrentSite`. Travel
