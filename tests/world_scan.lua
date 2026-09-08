@@ -7,11 +7,12 @@ local function vector(values,count)
 end
 local function site(id,kind)
     return {id=id,type=kind or 0,name={'English','Native'},global_min_x=0,global_max_x=0,
-        global_min_y=0,global_max_y=0}
+        global_min_y=0,global_max_y=0,flag={HAS_MARKET=false,RUINED=false,FUTURE_FLAG=false}}
 end
 local world={world_data={sites=vector({site(0)})},map={region_x=0,region_y=0},cur_savegame={save_dir='fixture'}}
 local env=setmetatable({df={global={world=world,cur_year=0,cur_year_tick=0},
     world_site_type={_first_item=0,_last_item=4,[0]='Cave',[1]='LairShrine',[2]='Fortress',[3]='Monument',[4]='FutureSite'},
+    site_flag_type={_first_item=0,_last_item=2,[0]='HAS_MARKET',[1]='RUINED',[2]='FUTURE_FLAG'},
     lair_type={_first_item=-1,_last_item=0,[-1]='NONE',[0]='SIMPLE_BURROW'},
     fortress_type={_first_item=0,_last_item=0,[0]='CASTLE'},monument_type={_first_item=0,_last_item=0,[0]='TOMB'}},
     dfhack={isWorldLoaded=function()return true end,isMapLoaded=function()return true end,
@@ -48,6 +49,22 @@ test('subtype reads follow tags and absent optional records differ from failures
     assert(r.sites[5].subtype_present==false and r.sites[5].subtype_unavailable==nil)
     assert(r.sites[6].subtype_present==true and r.sites[6].subtype_unavailable)
 end)
+test('native flag catalog preserves active sets and distinguishes false from failed reads',function()
+    local market,ruined,bad=site(0),site(1),site(2)
+    market.flag.HAS_MARKET=true
+    ruined.flag.RUINED=true;ruined.flag.FUTURE_FLAG=true
+    bad.flag.RUINED=nil
+    world.world_data.sites=vector({market,ruined,bad,site(3)})
+    local r=m.snapshot('epoch')
+    assert(r.sites[1].flags[1]=='HAS_MARKET' and #r.sites[1].flags==1)
+    assert(r.sites[2].flags[1]=='FUTURE_FLAG' and r.sites[2].flags[2]=='RUINED')
+    assert(not r.sites[3].flags and r.sites[3].flags_unavailable)
+    assert(#r.sites[4].flags==0 and not r.sites[4].flags_unavailable)
+    local catalog=env.df.site_flag_type;env.df.site_flag_type=nil
+    r=m.snapshot('epoch')
+    assert(r.available and r.sites[1].flags_unavailable and not r.sites[1].flags)
+    env.df.site_flag_type=catalog
+end)
 test('one unreadable site does not hide healthy results or claim full coverage',function()
     local bad=site(2);bad.global_max_y=-1
     world.world_data.sites=vector({site(0),bad,site(3,4)})
@@ -60,6 +77,7 @@ test('catalog reads running enums without loading a world or enumerating sites',
     world.world_data.sites=setmetatable({}, {__len=function()error('Catalog must not scan sites')end})
     local r=m.snapshot(nil,true)
     assert(r.available and r.complete and #r.tokens.site==5 and #r.tokens.lair_type==1)
+    assert(#r.tokens.site_flag_type==3)
     assert(r.tokens.lair_type[1]=='SIMPLE_BURROW' and not r.world)
     env.df.monument_type=nil;r=m.snapshot(nil,true)
     assert(r.available and not r.complete and r.unavailable.monument_type and r.tokens.site)
@@ -73,6 +91,12 @@ test('empty world and unavailable origin are explicit without local map or UI re
     env.dfhack.world.getAdventurer=function()error('No local character access while offloaded')end
     local r=m.snapshot('epoch')
     assert(r.available and r.complete and r.total==0 and not r.origin)
+    local p={x=0,y=1254,z=0}
+    r=m.snapshot('epoch',false,function()return p end)
+    assert(r.origin.x==0 and r.origin.y==1254)
+    r.origin.x=1;assert(p.x==0)
+    r=m.snapshot('epoch',false,function()error('Native travel coordinate unavailable')end)
+    assert(r.available and r.origin_unavailable and not r.origin)
     env.dfhack.isMapLoaded=function()return true end
     r=m.snapshot('epoch')
     assert(r.available and r.complete and r.origin_unavailable and not r.origin)

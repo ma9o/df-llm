@@ -1,7 +1,12 @@
 # World site scan
 
 `dfctl world-scan` and `Client.world_scan()` share one implementation. The native
-reader copies only site identity, names, tagged subtype, and bounding coordinates.
+reader copies only site identity, names, tagged subtype, active native flags, and
+bounding coordinates. `--match flag HAS_MARKET` locates market settlements;
+`RUINED` remains a factual flag for the controller to assess. A market record
+does not verify the presence or stock of a merchant. Flag names come from the
+running game's enum, and failed reads remain unknown, including on older cached
+snapshots without flags. Sorting uses the current travel army while offloaded.
 It uses named fields and live enum mappings, reads no character profiles or UI,
 and sends no game inputs. An open game panel does not block the query.
 

@@ -13,7 +13,14 @@ from dfharness.world_scan import search
 
 
 def site(id, type="Cave", name="Stone", x=0, y=0, **extra) -> dict[str, Any]:
-    return {"id": id, "type": type, "name": name, "position": {"x": x, "y": y, "z": 0}, **extra}
+    return {
+        "id": id,
+        "type": type,
+        "name": name,
+        "position": {"x": x, "y": y, "z": 0},
+        "flags": [],
+        **extra,
+    }
 
 
 def snapshot(sites, **extra) -> dict[str, Any]:
@@ -31,6 +38,37 @@ def snapshot(sites, **extra) -> dict[str, Any]:
 
 
 class WorldScanTests(unittest.TestCase):
+    def test_native_flags_distinguish_market_settlements_from_hamlets_and_names(self):
+        data = snapshot(
+            [
+                site(0, "Town", "Has_market"),
+                site(1, "Town", flags=["HAS_MARKET", "SETTLED"]),
+                site(2, "Town", flags=["HAS_MARKET", "RUINED", "FUTURE_FLAG", "CITY"]),
+            ]
+        )
+        results = search(data, ["has-market", "ruined", "future_flag"], match="flag")["results"]
+        self.assertEqual([[m["id"] for m in r["matches"]] for r in results], [[1, 2], [2], [2]])
+        self.assertTrue(all(r["complete"] for r in results))
+        self.assertEqual(search(data, ["CITY"], match="flag")["results"][0]["total"], 1)
+        self.assertEqual(search(data, ["HAS_MARKET"])["results"][0]["total"], 3)
+        self.assertEqual(search(data, ["HAS_MARKET"], match="type")["results"][0]["total"], 0)
+        self.assertEqual(search(data, ["HAS_MARKET"], match="name")["results"][0]["total"], 1)
+        parallel = search(data, ["HAS_MARKET"], match="flag", workers=2)
+        self.assertEqual(parallel["results"][0], results[0] | {"token": "HAS_MARKET"})
+
+    def test_unreadable_or_omitted_flags_are_unknown_only_when_needed_for_matching(self):
+        missing = site(0, "Town")
+        del missing["flags"]
+        data = snapshot([missing, site(1, "Town", flags_unavailable="bad native field")])
+        result = search(data, ["HAS_MARKET"], match="flag")["results"][0]
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["unknown"], 2)
+        self.assertEqual(result["matches"], [])
+        self.assertFalse(search(data, ["HAS_MARKET"])["complete"])
+        self.assertTrue(search(data, ["Town"])["complete"])
+        self.assertTrue(search(data, ["Cave"], match="type")["complete"])
+        self.assertTrue(search(data, ["absent"], match="name")["complete"])
+
     def test_native_types_subtypes_aliases_and_literal_unicode_names(self):
         data = snapshot(
             [

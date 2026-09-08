@@ -209,11 +209,9 @@ def parser():
     )
     locate.add_argument("kind", choices=["figure", "artifact"])
     locate.add_argument("id", type=int)
-    scan = subs.add_parser(
-        "world-scan", help="Find world sites by native type/subtype token or name"
-    )
+    scan = subs.add_parser("world-scan", help="Find world sites by native type, flag or name")
     scan.add_argument("tokens", nargs="*", help="One or more literal search terms")
-    scan.add_argument("--match", choices=["any", "type", "name"], default="any")
+    scan.add_argument("--match", choices=["any", "type", "name", "flag"], default="any")
     scan.add_argument("--limit", type=int, default=20, help="Maximum matches per term, 1..100")
     scan.add_argument(
         "--workers",
@@ -225,7 +223,7 @@ def parser():
         "--tokens",
         dest="catalog",
         action="store_true",
-        help="List the running game's native site/subtype tokens",
+        help="List the running game's native site/subtype and flag tokens",
     )
     keys.add_argument("filter", nargs="?", default="")
     inspect = subs.add_parser("inspect", help="Read a world tile and the items/creatures on it")

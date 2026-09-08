@@ -716,22 +716,29 @@ establish that drinkable water is present.
 coordinates, with an explicit world-record scope; they do not replace the
 character-known rumor list or imply current visibility.
 
-`world-scan` searches the world's entire site index by native type/subtype token
-or a literal substring of its translated/native name:
+`world-scan` searches the world's entire site index by native type/subtype or flag
+token, or a literal substring of its translated/native name:
 
 ```sh
 ./dfctl world-scan LAIR CAVE --match type --limit 5
 ./dfctl world-scan TOWER VAULT --match type --workers 4
 ./dfctl world-scan 'Meandering Prophecy' --match name
+./dfctl world-scan HAS_MARKET --match flag --limit 5
 ./dfctl world-scan --tokens
 ```
 
 The Python equivalent is `Client().world_scan(["LAIR", "CAVE"], match="type")`.
-The default `--match any` matches either an exact type/subtype or a name substring;
-use `--match type` for just the native classification. Types ignore case and
+The default `--match any` matches an exact type/subtype, active native flag, or name
+substring; use `--match type` or `--match flag` to restrict the query. Tokens ignore case and
 separators; original tokens such as `LAIR`, `CITY`, `CAVE_DETAILED`, and `TREE_CITY`
 are accepted alongside the exposed enum names. `--tokens` discovers the running
 game's enum catalog, including future additions.
+
+`HAS_MARKET` distinguishes market settlements from hamlets, which share the
+native `Town` type. Results preserve all active flags, including `RUINED`; a
+market flag does not prove a living merchant or available stock. An empty flags
+list means all catalogued flags were false. Failed flag reads are explicitly
+unavailable and prevent a complete negative flag search.
 
 One read-only DFHack call copies at most 32,768 site records; optional workers
 filter disjoint parts of that snapshot in separate Python processes. No worker
@@ -739,7 +746,7 @@ accesses the game. DFHack serializes native access, so parallel game calls would
 queue. One worker is the default because process startup costs more than this
 world's filtering. Results include IDs, names, types, surface travel coordinates,
 and total match counts. They are ordered by distance to each site's bounding-box
-center when a local adventurer is loaded, otherwise by ID. Coordinates identify
+center using the local adventurer or the current travel army, otherwise by ID. Coordinates identify
 site centers, not entrances or verified routes. `--limit` bounds results per term
 (default 20, maximum 100); scan truncation, result truncation, and unreadable
 records remain explicit. This is a world-record search, including locations
