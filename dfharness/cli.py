@@ -5,6 +5,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import reference
 from .client import Client, render_observation
 from .config import configure, doctor, launch, port_for_game
 from .metrics import active
@@ -15,7 +16,8 @@ from .rpc import DFHackError, DispatchError, run_command
 def parser():
     p = argparse.ArgumentParser(
         description="Control a running Dwarf Fortress through DFHack; adventure mode first.",
-        epilog="Agent quickstart: dfctl guide (offline). Exact action schema: dfctl actions NAME.",
+        epilog=reference.OVERVIEW,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
         "--port", type=int, help="Override DFHACK_PORT and the game's remote-server.json"
@@ -59,19 +61,24 @@ def parser():
         type=json.loads,
         help="Controller interruption conditions as a JSON object",
     )
-    subs = p.add_subparsers(dest="command", required=True)
-    subs.add_parser(
-        "guide", help="Print the compact agent CLI guide; offline, no settings or metrics"
+    # The overview epilog groups every command; argparse's flat 75-entry list
+    # would print the same names a second time.
+    subs = p.add_subparsers(
+        dest="command", required=True, metavar="COMMAND", help=argparse.SUPPRESS
     )
-    subs.add_parser("doctor", help="Find CrossOver, DFHack, saves, and the RPC connection")
-    audit = subs.add_parser(
-        "audit-log",
-        help="Measure transport and receipt costs from local JSONL logs; no game connection",
-    )
+    named = {}
+
+    def command(name, **extra):
+        # Summary, contract and formatter come from the shared reference table.
+        sub = subs.add_parser(name, **reference.parser_kwargs(name), **extra)
+        named[name] = sub
+        return sub
+
+    command("guide")
+    command("doctor")
+    audit = command("audit-log")
     audit.add_argument("paths", type=Path, nargs="+")
-    metrics = subs.add_parser(
-        "metrics", help="Summarize interaction measurements or compare a baseline; offline"
-    )
+    metrics = command("metrics")
     metrics.add_argument("paths", type=Path, nargs="*")
     metrics.add_argument(
         "--baseline",
@@ -95,51 +102,34 @@ def parser():
         help="Explicitly prepare a local encoding; may download tokenizer data",
     )
     metrics.add_argument("--text", action="store_true", help="Show a compact latency/token table")
-    setup = subs.add_parser(
-        "setup", help="Set the game's local RPC port; restart DFHack after changing it"
-    )
+    setup = command("setup")
     setup.add_argument("--port", dest="setup_port", type=int, default=5001)
-    launcher = subs.add_parser("launch", help="Ask Steam in CrossOver to launch DFHack")
+    launcher = command("launch")
     launcher.add_argument(
         "--direct", action="store_true", help="Launch DF directly with its installed DFHack hook"
     )
-    status = subs.add_parser(
-        "status", help="Read all supported character state and current game/input status"
-    )
+    status = command("status")
     status.add_argument(
         "--text", action="store_true", help="Render the character report as readable text"
     )
-    subs.add_parser("game-status", help="Read only the mode, screen, turn readiness, and version")
-    load = subs.add_parser(
-        "load-game",
-        aliases=["quickload"],
-        help="Development: load an exact save from the native title screen through DFHack",
-        description="Load an exact save through DFHack. Requires the native title screen with no world loaded; does not quit a running adventure.",
-    )
+    command("game-status")
+    load = command("load-game", aliases=["quickload"])
     load.add_argument("name", help="Save folder name, not a path")
     load.add_argument(
         "--seconds", type=float, default=120, help="Loading deadline, up to 300 seconds"
     )
     load.set_defaults(command="load-game")
-    session = subs.add_parser(
-        "session", help="List recent dispatch IDs in the running game session"
-    )
+    session = command("session")
     session.add_argument("--limit", type=int, default=20)
-    brief = subs.add_parser(
-        "brief", help="Read selected character essentials; status remains comprehensive"
-    )
+    brief = command("brief")
     brief.add_argument("--text", action="store_true")
     brief.add_argument("--since", help="Return changes against a previous brief read_ref")
-    unit = subs.add_parser(
-        "unit", help="Inspect a visible character's health, skills, attributes and equipment by ID"
-    )
+    unit = command("unit")
     unit.add_argument("unit_id", type=int)
     unit.add_argument("--view", choices=["concise", "full"], default="concise")
     unit.add_argument("--since", help="Return exact changes against a previous concise read_ref")
     unit.add_argument("--text", action="store_true")
-    settings = subs.add_parser(
-        "settings", help="Read or persist controller settings shared by CLI and Python"
-    )
+    settings = command("settings")
     settings.add_argument("--set", dest="settings_update", type=json.loads)
     settings.add_argument(
         "--reset", action="store_true", help="Reset to built-in settings before applying updates"
@@ -155,37 +145,24 @@ def parser():
     settings.add_argument("--interrupt-on", dest="setting_interrupt_on", type=json.loads)
     settings.add_argument("--view", dest="setting_view", choices=["concise", "full"])
     settings.add_argument("--seconds", dest="setting_seconds", type=float)
-    subs.add_parser(
-        "capabilities", help="Read runtime dependencies, action coverage and known limits"
-    )
-    reference = subs.add_parser(
-        "actions", help="Local action reference; an optional name returns its exact schema"
-    )
-    reference.add_argument("name", nargs="?")
-    reference.add_argument(
+    command("capabilities")
+    action_index = command("actions")
+    action_index.add_argument("name", nargs="?")
+    action_index.add_argument(
         "--expand", action="store_true", help="Inline all sequence stage schemas"
     )
-    details = subs.add_parser(
-        "dispatch-details", help="Read a saved dispatch without replaying input"
-    )
+    details = command("dispatch-details")
     details.add_argument("dispatch_id")
     details.add_argument(
         "--section",
         choices=["events", "prompts", "steps", "summary", "full", "compact"],
         default="events",
     )
-    character = subs.add_parser(
-        "character-status",
-        help="Read comprehensive character health, attributes, skills, needs, personality, and equipment",
-    )
+    character = command("character-status")
     character.add_argument(
         "--text", action="store_true", help="Render the character sheet as readable text"
     )
-    obs = subs.add_parser(
-        "observe",
-        aliases=["look"],
-        help="Read UI text, a local ASCII map, and structured adventure state",
-    )
+    obs = command("observe", aliases=["look"])
     obs.add_argument(
         "--view",
         choices=["concise", "full", "choices"],
@@ -211,9 +188,7 @@ def parser():
     )
     obs.add_argument("--report-limit", type=int, help="Native report page size, 1..4096")
     obs.add_argument("--since", help="Return exact changes against a previous concise read_ref")
-    items = subs.add_parser(
-        "items", help="Read visible nearby items and container contents in one call"
-    )
+    items = command("items")
     items.add_argument("--radius", type=int, default=20)
     items.add_argument(
         "--building", dest="building_id", type=int, help="Read visible furniture storage"
@@ -222,24 +197,20 @@ def parser():
     items.add_argument("--limit", type=int, default=100, help="Root items returned, 1..500")
     items.add_argument("--view", choices=["concise", "full"], default="concise")
     items.add_argument("--since", help="Return changes against a previous item-list read_ref")
-    barter = subs.add_parser("barter", help="Read and filter the active native trade catalog")
+    barter = command("barter")
     barter.add_argument("--side", choices=["take", "give"], default="take")
     barter.add_argument("--type", dest="item_type", help="Native item type, e.g. ARMOR")
     barter.add_argument("--limit", type=int, default=20)
-    item = subs.add_parser("item", help="Inspect one carried, ground, or stored visible item by ID")
+    item = command("item")
     item.add_argument("item_id", type=int)
-    interrupt = subs.add_parser(
-        "interrupt", help="Request that a running dispatch stop before further inputs"
-    )
+    interrupt = command("interrupt")
     interrupt.add_argument("dispatch_id")
-    keys = subs.add_parser("keys", help="List valid DF interface keys, optionally filtered")
-    navigation = subs.add_parser(
-        "navigation", help="Read travel coordinates, native site grid, and character-known leads"
-    )
+    keys = command("keys")
+    navigation = command("navigation")
     navigation.add_argument("--limit", type=int, default=20)
     navigation.add_argument("--view", choices=["concise", "full"], default="concise")
     navigation.add_argument("--since", help="Return changes against a previous navigation read_ref")
-    shops = subs.add_parser("shops", help="Find native shops in the current or specified site")
+    shops = command("shops")
     shops.add_argument(
         "--type", dest="shop_type", help="Native type, e.g. Armorsmith or FoodImports"
     )
@@ -250,12 +221,10 @@ def parser():
         action="store_true",
         help="Include stock counts and armor materials from native sale allotments; live stock can differ",
     )
-    locate = subs.add_parser(
-        "locate", help="Locate a historical figure or artifact in DFHack world records"
-    )
+    locate = command("locate")
     locate.add_argument("kind", choices=["figure", "artifact"])
     locate.add_argument("id", type=int)
-    scan = subs.add_parser("world-scan", help="Find world sites by native type, flag or name")
+    scan = command("world-scan")
     scan.add_argument("tokens", nargs="*", help="One or more literal search terms")
     scan.add_argument("--match", choices=["any", "type", "name", "flag"], default="any")
     scan.add_argument("--limit", type=int, default=20, help="Maximum matches per term, 1..100")
@@ -266,21 +235,17 @@ def parser():
         help="List the running game's native site/subtype and flag tokens",
     )
     keys.add_argument("filter", nargs="?", default="")
-    inspect = subs.add_parser("inspect", help="Read a world tile and the items/creatures on it")
+    inspect = command("inspect")
     for coord in ("x", "y", "z"):
         inspect.add_argument(coord, type=int)
-    ready = subs.add_parser(
-        "wait-ready", help="Wait without advancing the game until it can accept input"
-    )
+    ready = command("wait-ready")
     ready.add_argument("--seconds", type=float, default=30)
     ready.add_argument("--action-id")
-    run = subs.add_parser("run", help="Run an explicit DFHack command (advanced escape hatch)")
+    run = command("run")
     run.add_argument("args", nargs=argparse.REMAINDER)
     actions = {}
-    for name, need in (("drink", "thirst"), ("eat", "hunger")):
-        actions[name] = subs.add_parser(
-            name, help=f"Consume explicit carried portions and verify the {need} effect"
-        )
+    for name in ("drink", "eat"):
+        actions[name] = command(name)
         actions[name].add_argument("item_id", type=int)
         actions[name].add_argument("--portions", type=int, default=1)
     actions["drink"].add_argument(
@@ -289,20 +254,12 @@ def parser():
         help="Interpret the ID as a container; require equivalent, fully observed liquid contents",
     )
     for name in ("sleep", "rest"):
-        actions[name] = subs.add_parser(
-            name, help="Rest for explicit hours or until dawn, with native calendar verification"
-        )
+        actions[name] = command(name)
         actions[name].add_argument("hours", type=int, nargs="?")
         actions[name].add_argument("--until-dawn", dest="until", action="store_const", const="dawn")
-    actions["sequence"] = subs.add_parser(
-        "sequence",
-        help="Execute an ordered JSON list of semantic actions with shared policy and resume",
-    )
+    actions["sequence"] = command("sequence")
     actions["sequence"].add_argument("actions_json", help="JSON array, or - to read from stdin")
-    actions["converse"] = subs.add_parser(
-        "converse",
-        help="Ask explicit people/topics, collect each reply, and close the conversation interface",
-    )
+    actions["converse"] = command("converse")
     actions["converse"].add_argument("unit_ids", type=int, nargs="+")
     actions["converse"].add_argument(
         "--topic",
@@ -317,10 +274,7 @@ def parser():
         type=json.loads,
         help="JSON {topic, tact?, subject_hf_id?}; may be mixed with --topic in request order",
     )
-    actions["talk"] = subs.add_parser(
-        "talk",
-        help="Approach a unit, open its conversation, optionally select a topic and verify its reply",
-    )
+    actions["talk"] = command("talk")
     actions["talk"].add_argument("unit_id", type=int)
     actions["talk"].add_argument(
         "--subject-hf-id", type=int, help="Native historical-figure subject for an HF topic"
@@ -334,18 +288,12 @@ def parser():
         choices=["utterance", "reply"],
         help="Verified speech goal; a supplied topic defaults to reply",
     )
-    actions["end-conversation"] = subs.add_parser(
-        "end-conversation", help="Close and verify the conversation interface"
-    )
-    actions["open-trade"] = subs.add_parser(
-        "open-trade", help="Open the specified merchant's Shop catalog; no transaction"
-    )
+    actions["end-conversation"] = command("end-conversation")
+    actions["open-trade"] = command("open-trade")
     actions["open-trade"].add_argument("unit_id", type=int)
     actions["open-trade"].add_argument("--shop", dest="shop_id", type=int, required=True)
-    actions["close-trade"] = subs.add_parser("close-trade", help="Close the native trade interface")
-    actions["trade"] = subs.add_parser(
-        "trade", help="Submit and verify an exact offer in the open native trade"
-    )
+    actions["close-trade"] = command("close-trade")
+    actions["trade"] = command("trade")
     actions["trade"].add_argument("unit_id", type=int)
     actions["trade"].add_argument(
         "--take", type=json.loads, default=[], help="JSON list of item_id/amount pairs to receive"
@@ -355,27 +303,18 @@ def parser():
     )
     actions["trade"].add_argument("--offer-currency", type=int, default=0)
     actions["trade"].add_argument("--request-currency", type=int, default=0)
-    actions["save-game"] = subs.add_parser(
-        "save-game",
-        aliases=["quicksave"],
-        help="Write and verify a named checkpoint through DFHack quicksave",
-        description="Write an adventure checkpoint through the DFHack quicksave helper and verify the resulting world file. Existing folders require --overwrite.",
-    )
+    actions["save-game"] = command("save-game", aliases=["quicksave"])
     actions["save-game"].add_argument("name")
     actions["save-game"].add_argument(
         "--overwrite", action="store_true", help="Replace the existing named checkpoint"
     )
     actions["save-game"].set_defaults(command="save-game")
-    actions["combat"] = subs.add_parser(
-        "combat", help="Approach and select an explicit combat target; return undelegated decisions"
-    )
+    actions["combat"] = command("combat")
     actions["combat"].add_argument("unit_id", type=int)
     actions["combat"].add_argument(
         "--option-id", help="Explicit native move ID; further decisions are returned"
     )
-    actions["strike"] = subs.add_parser(
-        "strike", help="Attempt an aimed melee strike and report its effect or cancellation"
-    )
+    actions["strike"] = command("strike")
     actions["strike"].add_argument("unit_id", type=int)
     actions["strike"].add_argument("--body-part-id", type=int, required=True)
     actions["strike"].add_argument(
@@ -385,26 +324,17 @@ def parser():
     actions["strike"].add_argument(
         "--style", choices=["normal", "quick", "heavy", "wild", "precise"], required=True
     )
-    actions["use-stairs"] = subs.add_parser(
-        "use-stairs", help="Approach specified stairs and verify a one-level traversal"
-    )
+    actions["use-stairs"] = command("use-stairs")
     for name in ("x", "y", "z"):
         actions["use-stairs"].add_argument(name, type=int)
     actions["use-stairs"].add_argument("direction", choices=["up", "down"])
-    actions["make-campfire"] = subs.add_parser(
-        "make-campfire", help="Make and verify a campfire at the specified tile"
-    )
+    actions["make-campfire"] = command("make-campfire")
     for name in ("x", "y", "z"):
         actions["make-campfire"].add_argument(name, type=int)
-    actions["thaw"] = subs.add_parser(
-        "thaw", help="Thaw water in a carried container at an explicit heat source tile"
-    )
+    actions["thaw"] = command("thaw")
     for name in ("container_id", "x", "y", "z"):
         actions["thaw"].add_argument(name, type=int)
-    actions["fill-container"] = subs.add_parser(
-        "fill-container",
-        help="Fill a carried container from an explicit tile/material to native capacity",
-    )
+    actions["fill-container"] = command("fill-container")
     for name in ("container_id", "x", "y", "z"):
         actions["fill-container"].add_argument(name, type=int)
     actions["fill-container"].add_argument(
@@ -413,61 +343,40 @@ def parser():
     actions["fill-container"].add_argument(
         "--source-state", help="Exact native source phase, for example Solid or Liquid"
     )
-    actions["drink-from"] = subs.add_parser(
-        "drink-from", help="Drink specified portions from a native liquid source at a tile"
-    )
+    actions["drink-from"] = command("drink-from")
     for name in ("x", "y", "z"):
         actions["drink-from"].add_argument(name, type=int)
     actions["drink-from"].add_argument(
         "material", help="Exact native material token, for example WATER"
     )
     actions["drink-from"].add_argument("--portions", type=int, default=1)
-    actions["empty-container"] = subs.add_parser(
-        "empty-container",
-        help="Empty all contents of a carried container through its native liquid option",
-    )
+    actions["empty-container"] = command("empty-container")
     actions["empty-container"].add_argument("container_id", type=int)
-    actions["set-posture"] = subs.add_parser(
-        "set-posture", help="Set and verify standing/prone posture"
-    )
+    actions["set-posture"] = command("set-posture")
     actions["set-posture"].add_argument("posture", choices=["standing", "prone"])
-    actions["set-gait"] = subs.add_parser(
-        "set-gait", help="Select and verify a named native gait in the current movement mode"
-    )
+    actions["set-gait"] = command("set-gait")
     actions["set-gait"].add_argument("gait")
-    actions["set-sneaking"] = subs.add_parser(
-        "set-sneaking", help="Set and verify the character's sneaking flag"
-    )
+    actions["set-sneaking"] = command("set-sneaking")
     actions["set-sneaking"].add_argument("enabled", choices=["on", "off"])
-    actions["travel-to"] = subs.add_parser(
-        "travel-to", help="Travel directly toward surface travel coordinates and verify arrival"
-    )
+    actions["travel-to"] = command("travel-to")
     for name in ("x", "y"):
         actions["travel-to"].add_argument(name, type=int)
     actions["travel-to"].add_argument("--arrival-radius", type=int, default=0)
-    actions["end-travel"] = subs.add_parser(
-        "end-travel", help="Leave travel mode and verify the loaded local adventurer"
-    )
-    actions["move"] = subs.add_parser("move", help="Move one adventure step and observe the result")
+    actions["end-travel"] = command("end-travel")
+    actions["move"] = command("move")
     actions["move"].add_argument(
         "direction", choices=["n", "s", "e", "w", "ne", "nw", "se", "sw", "up", "down"]
     )
-    actions["wait"] = subs.add_parser("wait", help="Take one short in-game wait action")
-    actions["dismiss"] = subs.add_parser(
-        "dismiss", help="Acknowledge one detected help or announcement page"
-    )
-    actions["resume"] = subs.add_parser(
-        "resume", help="Apply dispatch policy to the current state without repeating prior input"
-    )
+    actions["wait"] = command("wait")
+    actions["dismiss"] = command("dismiss")
+    actions["resume"] = command("resume")
     actions["resume"].add_argument(
         "dispatch_id",
         nargs="?",
         help="Resume this saved workflow, including across client processes",
     )
     for name in ("pickup", "equip", "wield", "remove", "drop", "stow"):
-        actions[name] = subs.add_parser(
-            name, help=f"Dispatch {name} by item ID and verify its inventory result"
-        )
+        actions[name] = command(name)
         actions[name].add_argument("item_id", type=int)
     for name in ("equip", "wield"):
         actions[name].add_argument("--replace", type=int, nargs="*", default=[])
@@ -477,9 +386,7 @@ def parser():
         actions[name].add_argument("--container-id", type=int)
         actions[name].add_argument("--body-part-id", type=int)
     actions["stow"].add_argument("container_id", type=int)
-    actions["walk-to"] = subs.add_parser(
-        "walk-to", help="Walk to a tile in the currently observed local area"
-    )
+    actions["walk-to"] = command("walk-to")
     for name in ("x", "y", "z"):
         actions["walk-to"].add_argument(name, type=int)
     actions["walk-to"].add_argument(
@@ -514,37 +421,25 @@ def parser():
         actions[name].add_argument("--max-liquid-depth", type=int)
         actions[name].add_argument("--blocked-tiles", type=json.loads)
         actions[name].add_argument("--extend-route", action="store_true", default=None)
-    actions["select-option"] = subs.add_parser(
-        "select-option", help="Select a currently visible structured menu option"
-    )
+    actions["select-option"] = command("select-option")
     actions["select-option"].add_argument("option_id")
-    actions["select-interaction"] = subs.add_parser(
-        "select-interaction", help="Select a guarded conversation or combat choice handle"
-    )
+    actions["select-interaction"] = command("select-interaction")
     actions["select-interaction"].add_argument("option_id")
-    actions["respond"] = subs.add_parser(
-        "respond", help="Respond to the current Continue/Stop/Finish prompt"
-    )
+    actions["respond"] = command("respond")
     actions["respond"].add_argument("choice", choices=["continue", "stop", "finish"])
-    actions["select-unit"] = subs.add_parser(
-        "select-unit", help="Select a visible creature in the conversation picker"
-    )
+    actions["select-unit"] = command("select-unit")
     actions["select-unit"].add_argument("unit_id", type=int)
-    actions["key"] = subs.add_parser("key", help="Send one named DF interface key and observe")
+    actions["key"] = command("key")
     actions["key"].add_argument("key")
-    actions["click"] = subs.add_parser("click", help="Click a zero-based UI character cell")
+    actions["click"] = command("click")
     actions["click"].add_argument("x", type=int)
     actions["click"].add_argument("y", type=int)
     actions["click"].add_argument("--button", choices=["left", "right", "middle"], default="left")
-    actions["choose"] = subs.add_parser(
-        "choose", help="Click a unique visible label in the text UI"
-    )
+    actions["choose"] = command("choose")
     actions["choose"].add_argument("label")
-    actions["text"] = subs.add_parser(
-        "text", help="Type printable ASCII into the focused text field"
-    )
+    actions["text"] = command("text")
     actions["text"].add_argument("value")
-    actions["act"] = subs.add_parser("act", help="Send an action JSON object; use - to read stdin")
+    actions["act"] = command("act")
     actions["act"].add_argument("action_json")
     for action in actions.values():
         # The parser already defines each command's fields. Keep that schema
@@ -589,13 +484,15 @@ def parser():
             help="Include all reports or omit counted routine/ambient reports",
         )
         action.add_argument("--text", action="store_true", help="Return a compact text observation")
-    for command in set(subs.choices.values()):
-        command.add_argument(
+    for sub in set(subs.choices.values()):
+        sub.add_argument(
             "--pretty",
             action="store_true",
             default=argparse.SUPPRESS,
             help="Indent JSON for human reading",
         )
+    for name, sub in named.items():
+        reference.describe_arguments(sub, name)
     return p
 
 

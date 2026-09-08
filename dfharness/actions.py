@@ -2,27 +2,8 @@
 
 from copy import deepcopy
 
+from .reference import action_text
 from .workflows import SEMANTIC
-
-ACTION_HELP = {
-    "trade": "Submit an exact replacement offer in the open merchant catalog: take/give entries have item_id and amount; offer_currency/request_currency use native currency units. Validates selections and a unique character-layer Trade button before input, then verifies item quantities and the player's currency. Native counteroffers return to the controller. Sale items must be held separately (remove equipped/contained items first); containers are unsupported.",
-    "open_trade": "Approach unit_id, request Trade, select the explicit loaded Shop zone shop_id, and verify DF's rebuilt catalog. Preserves pending offers. Does not purchase or sell anything; use barter for a filtered goods query.",
-    "close_trade": "Close the native trade interface without submitting a transaction.",
-    "move": "Move to the adjacent tile in direction; verifies the native position. Composable in sequence. Uses the native path command where available; game refusals remain blockers.",
-    "wait": "One native short wait; verifies time advanced and input settled. Composable in sequence. Use rest for a longer duration.",
-    "walk_to": "Submit a native path goal and verify the requested position or arrival_radius. DF computes the route. Step/complete, interruption and resume share the dispatch policy. Explicit tile/depth/occupancy constraints retain the constrained route adapter.",
-    "drop": "Drop the specified item, removing it first if worn. Container contents stay inside. Returns location, contents integrity, cached load and burden from unit state.",
-    "stow": "Place the item in container_id, removing it first if worn. Returns destination, contents integrity, cached load and burden from unit state.",
-    "equip": "Wear item_id; only replace listed item IDs and apply the requested disposition. Returns equipment location and resulting load.",
-    "wield": "Hold item_id as a weapon; replacements and their disposition must be explicit. Returns equipment location and resulting load.",
-    "pickup": "Approach and acquire item_id with its contents. Returns location, contents integrity and resulting load.",
-    "remove": "Remove item_id into a hand. Returns location and resulting load; does not select other equipment to discard.",
-    "strike": "Attempt one aimed melee strike using body_part_id, item_id, attack_index and style. Returns wounded, missed, dodged, blocked, parried, out_of_range, cancelled, or explicitly unverified damage. Cancellation completes an attempt; recovered=false distinguishes interrupted recovery. Report-text attribution is labelled and conservative. Target condition preserves current impairments and diffs other fields. Obtain body-part IDs with unit; weapon attack indices with item.",
-    "combat": "Open the target's native combat choices. This is discovery/navigation; use strike to execute a complete aimed attack.",
-    "sequence": "Execute explicit semantic actions in order under one completion policy, interruption policy and budget. Resume preserves completed stages. Item prerequisites are handled inside their stages.",
-    "converse": "Visit explicit unit_ids, ask explicit topics and collect replies. A topic may include tact and subject_hf_id. Return only when completed or an undelegated choice is needed.",
-    "save_game": "Save and continue through the adventure DFHack quicksave helper in one native request. Verifies the named world.sav was written and the game is ready again. Existing folders require overwrite=true; current and native autosave names are reserved.",
-}
 
 
 def obj(properties=None, required=()):
@@ -323,8 +304,7 @@ ACTIONS.append(
 
 # Action-specific semantics travel with the shared CLI/Python action reference.
 for definition in ACTIONS:
-    if note := ACTION_HELP.get(definition["properties"]["type"]["const"]):
-        definition["description"] = note
+    definition["description"] = action_text(definition["properties"]["type"]["const"])[0]
 
 
 def action_reference(name=None, *, expand=False):
@@ -346,9 +326,11 @@ def action_reference(name=None, *, expand=False):
             references = {
                 "schema_references": "Resolve dfctl:actions/NAME with dfctl actions NAME; --expand returns the self-contained shared schema."
             }
+        summary, details = action_text(name)
         return {
             "action": name,
-            "description": ACTION_HELP.get(name, "See schema and runtime capabilities."),
+            "description": summary,
+            "details": details,
             "schema": schema,
             **references,
             "execution": "Use saved settings or override mode=complete/step, acknowledge and interrupt_on. Availability: capabilities.",

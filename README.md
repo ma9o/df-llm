@@ -57,20 +57,15 @@ for discovery, configuration backups and save locations.
 
 ## Reference
 
-| Need | Read |
+| Need | Where |
 |---|---|
 | Routine CLI play | [Agent guide](dfharness/guide.md) or `./dfctl guide` |
-| Settings, reads, receipts, policy, resume, Python | [Controller reference](docs/controller.md) |
-| Trading, sequences, equipment, movement, combat, travel, save and load | [Gameplay reference](docs/gameplay.md) |
-| Comprehensive character state | [Character status](docs/character-status.md) |
-| World site search | [World scan](docs/world-scan.md) |
-| Local game mechanics lookup | [Offline wiki](docs/local-wiki.md) |
-| Passive measurement | [Measurement](docs/measurement.md) |
-| Setup, architecture, development tools | [Development](docs/development.md) |
-| Tests and known limits | [Tests and known limits](docs/validation.md) |
+| Policy flags, outcomes and the command list | `./dfctl --help` |
+| One command's contract and flags | `./dfctl COMMAND --help` |
+| Exact action JSON schemas | `./dfctl actions NAME` |
+| Runtime support and limits in the running game | `./dfctl capabilities` |
+| Setup, tests, measurement, offline wiki, architecture | [Development](docs/development.md) |
 | What shipped and where its evidence lives | [History](docs/history.md) |
-
-Use `./dfctl capabilities` for runtime support and concrete limitations.
 
 ## Development
 
@@ -80,5 +75,4 @@ Follow [AGENTS.md](AGENTS.md). Run offline tests with isolated controller settin
 uv run --locked python -m tests.run
 ```
 
-`make check` runs the full checks and package build; it also requires Luacheck and
-ShellCheck. See [development setup](docs/development.md#environment-and-checks).
+`make check` runs the full checks and package build; it also requires Luacheck. See [development setup](docs/development.md#environment-and-checks).

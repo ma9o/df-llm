@@ -143,7 +143,17 @@ def capability_report(native):
         "attack_report_window": 512,
         "pending_poll_pause_seconds": {"initial": POLL_MIN_SECONDS, "maximum": POLL_MAX_SECONDS},
         "visible_unit_scan": 32768,
+        "nearby_item_radius": {"default": 20, "maximum": 50},
+        "nearby_item_budget": 500,
+        "nearby_container_depth": 4,
+        "inventory_item_budget": 300,
+        "conversation_targets": 32,
     }
+    result["unverified"] = [
+        "Continue/Stop/Finish prompt responses are implemented but not yet exercised live",
+        "Successful live until-dawn rest completion has not been observed",
+        "Native walkability caches can be stale; a stale cache is reported, never refreshed",
+    ]
     result["readers"] = {
         "barter": "Active native trade catalog; item type filtering before detailed reads, explicit limits and unknown weights",
         "actions": "Local action reference and exact shared schemas; no game connection",
@@ -164,6 +174,8 @@ def capability_report(native):
         "Trading containers and preparing equipped sale items inside trade; crafting, performances and abilities",
         "Companion orders, mounts and tracking",
         "Quest commitments and special interaction choices beyond conversation tacts",
+        "Character creation and other title-screen flows beyond loading a save",
+        "Trade button lookup in non-English UI text",
     ]
     result["unit_health_watches"] = {
         "dependencies_present": result["features"]

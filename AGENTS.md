@@ -143,9 +143,10 @@ target, bound the wait, watch the controller's predicates, verify the result.
 
 ## Documentation
 
-- `dfharness/guide.md` is the controller's entry point and stays short. `docs/`
-  holds contracts: what a command does, its flags, receipt fields, limits and
-  unsupported cases.
+- `dfharness/guide.md` is the controller's entry point and stays short. Every
+  command's contract lives in `dfharness/reference.py` and is printed by
+  `COMMAND --help` and `actions NAME`; a test enforces that every command and
+  argument is covered. `docs/` holds only setup and history.
 - Evidence does not live in `docs/`. Measurements, live-check narratives and
   pass counts go in commit messages, with artifacts under `.df-llm/`.
   `docs/history.md` records what shipped and where its evidence lives, one short

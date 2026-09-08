@@ -115,6 +115,6 @@ receive its final scene inside `after`, avoiding a separate look call.
 For evidence: `dispatch-details ID --section events|prompts|steps|full` (choose
 one). Retention is 128 dispatches; `--log PATH` preserves a JSONL trace.
 Use `observe --view full` / `--result-format full` for diagnostics; raw keys and
-clicks are development tools. More policy/recovery details:
-[controller reference](../docs/controller.md#dispatch-policy). Mechanics reference:
+clicks are development tools. Policy flags and outcomes: `./dfctl --help`; one
+command's contract: `./dfctl COMMAND --help`. Mechanics reference:
 `.df-llm/wiki/articles/` (search locally with `rg`).

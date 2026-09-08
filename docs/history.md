@@ -66,3 +66,8 @@ and the original long-form docs are kept outside the repository under
   production allotments for shops and markets, without visiting each seller.
   Exact item quality, fit and current availability remain separate reads.
   Evidence: `.df-llm/shop-armor-lookup.json`, `.df-llm/shop-stock-fixtures.json`.
+- **Contracts moved into the CLI.** Every command's summary, contract and
+  argument help live in `dfharness/reference.py`, printed by `COMMAND --help`
+  and `actions NAME`, with a test enforcing coverage. The controller, gameplay,
+  character-status, validation, world-scan, measurement and local-wiki docs were
+  folded into that text, `capabilities` and `development.md`.

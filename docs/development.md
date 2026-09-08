@@ -1,7 +1,9 @@
 # Development and setup
 
 Read [AGENTS.md](../AGENTS.md) for the design rules and legacy adapters. Use
-the [agent guide](../dfharness/guide.md) for routine play.
+the [agent guide](../dfharness/guide.md) for routine play. Every command's
+contract is printed by `./dfctl COMMAND --help`; the source of that text is
+`dfharness/reference.py`.
 
 ## Connection and launch
 
@@ -34,12 +36,11 @@ uv sync --locked
 make check
 ```
 
-`make check` needs [Luacheck](https://github.com/lunarmodules/luacheck) and
-[ShellCheck](https://www.shellcheck.net/). `make lint-fix` applies safe Ruff
-fixes and `make format` formats Python. Vulture scans only the production
-package and the executable shims, so a definition referenced only by a test is
-reported as dead. Lua is checked as 5.3 with DFHack's globals from `.luacheckrc`.
-Test suites are described in [tests and known limits](validation.md).
+`make check` needs [Luacheck](https://github.com/lunarmodules/luacheck).
+`make lint-fix` applies safe Ruff fixes and `make format` formats Python.
+Vulture scans only the production package and the executable shims, so a
+definition referenced only by a test is reported as dead. Lua is checked as 5.3
+with DFHack's globals from `.luacheckrc`.
 
 Pinned read-only clones of dfhack, df-structures and scripts for 53.16-r1.1
 live under `.df-llm/upstream/`; see its README. Known gaps in that release:
@@ -48,9 +49,46 @@ and `load-save` uses obsolete title fields. The repository supplies its own
 burden helper, an adventure quicksave extension and a repaired loader. Do not
 work around gaps with binary-specific models.
 
-`./dfctl audit-log PATH...` summarizes RPC and receipt sizes from JSONL logs
-without connecting to the game. Measurement settings are described in
-[measurement](measurement.md).
+### Tests
+
+`uv run --locked python -m tests.run` runs the offline Python suite with
+isolated controller settings and metrics disabled, so saved gameplay policy and
+fixtures cannot contaminate each other. Append a module to run part of it, for
+example `tests.test_dispatch -v`. `tests/test_reference.py` enforces that every
+CLI command and argument documents itself.
+
+`python3 -m tests.live_character_status --port 5001` checks the CLI and Python
+character queries against the running adventurer, verifies that game time,
+input serial, health and inventory are unchanged, and runs the isolated Lua
+fixtures under `tests/*.lua` inside DFHack. `--fixtures-only` runs the fixtures
+while someone is playing. The fixtures send no game input and do not insert or
+injure units.
+
+### Measurement
+
+Passive measurement is off by default. It records operation, outcome, timing,
+bytes and correlated RPC costs per controller call, never payload text, and
+never changes execution. Enable it with
+`./dfctl settings --set '{"measurement":{"enabled":true,"run":"NAME","episode":"LABEL"}}'`
+or per process with `--metrics PATH`; `--no-metrics` disables it. Reports and
+offline token counting are described by `./dfctl metrics --help`; tiktoken is
+in the optional `analysis` extra and is prepared explicitly, never during play.
+
+### Local game reference
+
+A searchable source mirror of the Dwarf Fortress wiki lives at `.df-llm/wiki/`:
+articles, templates, categories and module source, each file headed by its
+revision URL and date, with coverage recorded in `manifest.json`.
+
+```sh
+rg -n -i 'stun|pain' .df-llm/wiki/articles/Ettin.wiki
+uv run python tools/mirror_wiki.py            # create or resume the copy
+uv run python tools/mirror_wiki.py --refresh  # explicit update only
+```
+
+The downloader uses the read-only MediaWiki API with `maxlag` and pauses, and
+resumes from its last committed batch. Use the local copy first and cite the
+file; wiki text is reference material, not execution policy.
 
 ## Architecture
 
@@ -94,11 +132,52 @@ flowchart LR
   caller to observe.
 - **Logging.** `--log PATH` or `Client(log_path=...)` records requests,
   responses, timestamps and latency as JSONL, including processing polls.
+  `./dfctl audit-log PATH` summarizes such a log offline.
 
 Two coordinate systems exist. `Uyy|` rows are UI character cells, with x as the
 zero-based offset after the bar. `Myy|` rows are map crop cells; add the crop
 origin for the local world tile. Map cells are not click coordinates. Local
 coordinates change when a different area loads; observe again after travel.
+
+## Python client
+
+The CLI delegates to `dfharness.client.Client`; both share actions, validation,
+settings, readers and receipts. No API key or model provider is required.
+
+```python
+from dfharness.client import Client
+
+game = Client()  # inherits the saved controller settings
+view = game.observe(view="concise")
+if view["status"]["can_move"]:
+    result = game.act(
+        {"type": "move", "direction": "w"},
+        expect=view["state_id"],
+        request_id="one-unique-id-per-intended-action",
+    )
+```
+
+Pass a returned `resume` action to `game.act` with the latest state guard and
+your execution overrides. Persist recurring policy with
+`game.settings(update=...)`. Python controllers can reconstruct a `--since`
+delta with `dfharness.readings.apply_read(previous, response)`.
+
+## Burden helper for DFHack scripts
+
+Capacity, load penalty and burden come from the repository's read-only DFHack
+Lua helper `dfharness/burden`, which uses `getPhysicalAttrValue`,
+`getEffectiveSkill`, `item:isArmor()` and mapped inventory fields in one bounded
+pass over root inventory caches. Other DFHack scripts can call it directly:
+
+```lua
+local helper = dfhack.reqscript('Z:/Users/ma9o/Desktop/df-llm/dfharness/burden')
+local load = helper.getBurden(dfhack.world.getAdventurer())
+-- load.capacity, load.load_penalty, load.burden
+```
+
+Use your package's absolute path, or install the helper alone under
+`hack/scripts/dfharness/`. Do not register the repository root as a script
+search path.
 
 ## Raw UI operations
 
