@@ -66,6 +66,10 @@ and the original long-form docs are kept outside the repository under
   production allotments for shops and markets, without visiting each seller.
   Exact item quality, fit and current availability remain separate reads.
   Evidence: `.df-llm/shop-armor-lookup.json`, `.df-llm/shop-stock-fixtures.json`.
+- **World material stock search.** `world-scan --material` reads persistent
+  resources at unloaded sites and identifies matching available shop sale records.
+  Imported materials follow their source production catalog. Evidence:
+  `.df-llm/steel-search/`.
 - **Contracts moved into the CLI.** Every command's summary, contract and
   argument help live in `dfharness/reference.py`, printed by `COMMAND --help`
   and `actions NAME`, with a test enforcing coverage. The controller, gameplay,

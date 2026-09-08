@@ -19,6 +19,7 @@ JSON is minified by default; `--pretty` indents it. Observations/actions also ac
 | Current menu/prompt only | `observe --view choices` |
 | Readiness only; comprehensive character | `game-status`; `status` |
 | Travel destinations; shop stock and armor materials | `navigation`; `shops --stock` |
+| Material stock across the world, including unloaded sites | `world-scan --material STEEL` |
 | Merchant's specified Shop catalog | `open-trade UNIT --shop ZONE`; `barter --type ARMOR`; `close-trade` |
 | Named checkpoint; load from title screen | `quicksave NAME`; `quickload NAME` |
 

@@ -1134,6 +1134,10 @@ local function dispatch()
         local out=geography.shops(site,navigation_position(s),integer(req.limit or 20,1,100,'limit'),req.shop_type,req.stock)
         out.site={id=site.id,name=text(dfhack.translation.translateName(site.name,true))}
         return out
+    elseif req.op=='world_stock' then
+        check(type(req.material)=='string' and #req.material>0 and #req.material<=200,'material must be a native token')
+        check(req.world_epoch==session.world_epoch,'World changed during material scan; read the world index again')
+        return modules.world_stock({array=array,text=text}).read(req.site_ids,req.material,session.world_epoch)
     elseif req.op=='world_sites' then
         check(req.catalog==nil or type(req.catalog)=='boolean','catalog must be boolean')
         return modules.world_scan({array=array,text=text}).snapshot(session.world_epoch,req.catalog,function()

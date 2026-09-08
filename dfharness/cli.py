@@ -229,6 +229,9 @@ def parser():
     scan.add_argument("--match", choices=["any", "type", "name", "flag"], default="any")
     scan.add_argument("--limit", type=int, default=20, help="Maximum matches per term, 1..100")
     scan.add_argument(
+        "--material", help="Search worldwide resource stock, e.g. STEEL or INORGANIC:IRON"
+    )
+    scan.add_argument(
         "--tokens",
         dest="catalog",
         action="store_true",
@@ -653,6 +656,7 @@ def execute(args, client=None):
                     match=args.match,
                     limit=args.limit,
                     catalog=args.catalog,
+                    material=args.material,
                 )
             elif args.command == "character-status":
                 result = client.character_status()

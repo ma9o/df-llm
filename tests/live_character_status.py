@@ -43,6 +43,7 @@ def native_fixtures(port):
         ("environment.lua", "environment.lua"),
         ("geography.lua", "geography.lua"),
         ("world_scan.lua", "world_scan.lua"),
+        ("world_stock.lua", "world_stock.lua"),
         ("movement.lua", "movement.lua"),
         ("pathing.lua", "pathing.lua"),
         ("input_guard.lua", "input_guard.lua"),

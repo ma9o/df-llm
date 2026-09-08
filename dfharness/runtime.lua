@@ -232,6 +232,8 @@ local requirements={
         'dfhack.maps.getBiomeType'},
     world_scan={{path='df.global.world.world_data.sites',type='vector'},
         'dfhack.translation.translateName'},
+    world_stock={{path='df.global.world.world_data.resource_allotments',type='vector'},
+        'dfhack.matinfo.find',{path='df.resource_allotment_specifier',type='table'}},
     persistence={'dfhack.persistent.saveWorldData','dfhack.persistent.getWorldData'},
     strike={'df.unit_action_type.Attack',{path='df.unit.find',type='function'},'df.interface_key.QUICK_ATTACK','df.interface_key.HEAVY_ATTACK',
         'df.interface_key.WILD_ATTACK','df.interface_key.PRECISE_ATTACK','df.interface_key.CHARGE_ATTACK',

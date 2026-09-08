@@ -432,7 +432,7 @@ COMMANDS: dict[str, Command] = {
         "args": {"kind": "figure or artifact", "id": "Historical figure ID or artifact ID"},
     },
     "world-scan": {
-        "summary": "Search world site records by native type, flag or name.",
+        "summary": "Search world site records by native type, flag, name or stocked material.",
         "details": _text(
             """
             Copies the site index once and filters it locally. --match any (default)
@@ -444,9 +444,25 @@ COMMANDS: dict[str, Command] = {
             explicit. Distances are Chebyshev distances to site centres in travel
             tiles, not routes. This searches world records, including places the
             character does not know.
+
+            --material TOKEN (STEEL, INORGANIC:IRON) searches persistent resource
+            allotments at every indexed site, including unloaded settlements, and
+            identifies matching available shop sale records. Site tokens are
+            optional; with both, a site must match both. Reads run in batches of 32
+            sites; --limit bounds returned sites, not sites searched. Failed reads
+            stay unknown and mark the search incomplete, listed under
+            material_unavailable. Matches carry stock.resource_pile.quantities by
+            allotment category and stock.sale_records with shop names, types and
+            travel coordinates. These are abstract quantities and recorded
+            allotments, not a living merchant, catalog, quality, fit or price;
+            resource and sale quantities overlap and must not be added. Verify
+            with barter before buying. --tokens cannot be combined with --material.
             """
         ),
-        "args": {"match": "Restrict matching to type, name or flag"},
+        "args": {
+            "match": "Restrict matching to type, name or flag",
+            "material": "Native material token to search stock for, e.g. STEEL or INORGANIC:IRON",
+        },
     },
     "inspect": {
         "summary": "One tile: terrain, biome, building, and the items and creatures on it.",
@@ -635,19 +651,19 @@ COMMANDS: dict[str, Command] = {
         "summary": "Submit an exact offer in the open trade and verify the transfer.",
         "details": _text(
             """
-            Flow: shops --stock, open-trade UNIT --shop ZONE, barter --type T, then
-            trade. --take and --give are JSON lists of {item_id, amount}; currency is
-            in native units. The adapter validates the merchant, both sides,
-            quantities, currency bounds and a unique visible Trade button before
-            touching the draft, clicks that button so DF's own handler performs the
-            trade, then verifies the exact source and destination quantities and
-            your currency change. A refusal or counteroffer returns needs_input with
-            the native reply and any counter amounts; you choose whether to submit a
-            new explicit offer. base_value is not an accepted price. Sale items must
-            be held: compose close_trade, remove, open_trade and trade to sell
-            equipped items. Nonempty containers and contained rows are unsupported.
-            The button lookup requires English UI text. An unverified submission is
-            never repeated by resume.
+            Flow: world-scan --material T to find stocked sites, shops --stock, open-
+            trade UNIT --shop ZONE, barter --type T, then trade. --take and --give are
+            JSON lists of {item_id, amount}; currency is in native units. The adapter
+            validates the merchant, both sides, quantities, currency bounds and a
+            unique visible Trade button before touching the draft, clicks that button
+            so DF's own handler performs the trade, then verifies the exact source and
+            destination quantities and your currency change. A refusal or counteroffer
+            returns needs_input with the native reply and any counter amounts; you
+            choose whether to submit a new explicit offer. base_value is not an
+            accepted price. Sale items must be held: compose close_trade, remove,
+            open_trade and trade to sell equipped items. Nonempty containers and
+            contained rows are unsupported. The button lookup requires English UI
+            text. An unverified submission is never repeated by resume.
             """
         ),
         "args": {

@@ -82,7 +82,9 @@ local function armor_material_reader()
         -- SRB sale records reference a production zone and its typed allotment
         -- vector, not instantiated items. They contain no quality, fit or weight.
         local zone=zones[entry.production_zone_index]
-        if entry.controlling_civ>=0 then
+        -- Imports retain their source production catalog. A controlling entity
+        -- supplies that catalog only when the production zone ID is absent.
+        if entry.production_zone_index<0 and entry.controlling_civ>=0 then
             local entity=assert(df.historical_entity.find(entry.controlling_civ),'Missing controlling entity')
             zone=entity.resource_allotment
         end

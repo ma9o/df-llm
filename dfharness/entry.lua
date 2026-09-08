@@ -7,7 +7,7 @@ local assets={bridge='bridge',glyph='cp437',interactions='interactions',ui='nati
     movement='movement',wire='wire',session='session',screen='screen',items='items',
     rest='rest',aim='aim',saving='quicksave',health='health',progress='progress',attack='attack',burden='burden',pathing='pathing',
     report_events='report_events',fastcombat='fastcombat',geography='geography',
-    world_scan='world_scan',barter='barter',exchange='exchange'}
+    world_scan='world_scan',world_stock='world_stock',barter='barter',exchange='exchange'}
 
 function request(payload,package_path)
     assert(type(package_path)=='string' and package_path:sub(-1)=='/'

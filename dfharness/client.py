@@ -333,22 +333,24 @@ class Client:
         return self.request(request)
 
     @measured
-    def world_scan(self, tokens=None, *, match="any", limit=20, catalog=False):
-        from .world_scan import search, validate
+    def world_scan(self, tokens=None, *, match="any", limit=20, catalog=False, material=None):
+        from .world_scan import attach_stock, search, validate
 
         if type(catalog) is not bool:
             raise ValueError("catalog must be boolean")
         if catalog:
-            if tokens:
+            if tokens or material is not None:
                 raise ValueError("Choose a token catalog or a search, not both")
             snapshot = self.request({"op": "world_sites", "catalog": True})
             return {
                 k: v for k, v in snapshot.items() if k not in ("sites", "errors", "error_count")
             }
         tokens = [tokens] if isinstance(tokens, str) else tokens
-        tokens = validate(tokens, match, limit)
+        tokens = validate(tokens, match, limit, material)
         snapshot = self.request({"op": "world_sites"})
-        return search(snapshot, tokens, match, limit)
+        if material is not None:
+            snapshot = attach_stock(snapshot, material, self.request)
+        return search(snapshot, tokens, match, limit, material)
 
     @measured
     def character_status(self):

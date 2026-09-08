@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from dfharness.cli import main
 from dfharness.client import Client
-from dfharness.world_scan import search
+from dfharness.world_scan import attach_stock, search
 
 
 def site(id, type="Cave", name="Stone", x=0, y=0, **extra) -> dict[str, Any]:
@@ -36,6 +36,131 @@ def snapshot(sites, **extra) -> dict[str, Any]:
 
 
 class WorldScanTests(unittest.TestCase):
+    def test_material_search_preserves_partial_hits_and_unknowns_without_matching_names(self):
+        data = snapshot(
+            [
+                site(0, "Town", "Steelromance", stock={"matched": False, "complete": True}),
+                site(1, "Town", "Distant", x=100, stock={"matched": True, "complete": True}),
+                site(2, "Town", stock={"matched": False, "complete": False}),
+                site(3, "Town", stock={"matched": True, "complete": False}),
+            ],
+            material="INORGANIC:STEEL",
+            origin={"x": 0, "y": 0},
+        )
+        before = deepcopy(data)
+        result = search(data, [], material="STEEL", limit=1)["results"][0]
+        self.assertEqual(result["material"], "INORGANIC:STEEL")
+        self.assertEqual(result["total"], 2)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["matches"][0]["id"], 3)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["unknown"], 2)
+        self.assertEqual(data, before)
+        self.assertTrue(search(data, ["Cave"], match="type", material="STEEL")["complete"])
+
+    def test_material_can_be_combined_with_market_flags_and_known_zero_excludes_unknown_flags(self):
+        data = snapshot(
+            [
+                site(0, flags=["HAS_MARKET"], stock={"matched": True, "complete": True}),
+                site(1, stock={"matched": True, "complete": True}),
+                site(2, flags_unavailable="missing", stock={"matched": False, "complete": True}),
+            ],
+            material="INORGANIC:STEEL",
+        )
+        result = search(data, ["HAS_MARKET"], match="flag", material="STEEL")["results"][0]
+        self.assertEqual([row["id"] for row in result["matches"]], [0])
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["token"], "HAS_MARKET")
+
+    def test_world_material_scan_covers_every_site_despite_a_small_result_limit(self):
+        data = snapshot([site(i, x=i) for i in range(67)], world={"epoch": "world"})
+        calls = []
+
+        def request(payload):
+            calls.append(payload)
+            if payload["op"] == "world_sites":
+                return deepcopy(data)
+            self.assertEqual(payload["world_epoch"], "world")
+            self.assertEqual(payload["material"], "STEEL")
+            return {
+                "available": True,
+                "world_epoch": "world",
+                "material": "INORGANIC:STEEL",
+                "sites": [
+                    {"id": id, "stock": {"matched": id == 66, "complete": True}}
+                    for id in payload["site_ids"]
+                ],
+            }
+
+        with patch.object(Client, "request", side_effect=request):
+            result = Client(port=1).world_scan(material=" STEEL ", limit=1)
+        self.assertEqual([len(c["site_ids"]) for c in calls[1:]], [32, 32, 3])
+        self.assertEqual(result["results"][0]["matches"][0]["id"], 66)
+        self.assertTrue(result["complete"])
+        self.assertNotIn("stock", data["sites"][0])
+
+    def test_world_replacement_missing_batch_and_unavailable_material_never_claim_success(self):
+        data = snapshot([site(0)], world={"epoch": "world"})
+        for response in (
+            {"available": True, "world_epoch": "changed"},
+            {"available": True, "world_epoch": "world", "material": "INORGANIC:STEEL", "sites": []},
+        ):
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                attach_stock(data, "STEEL", lambda _payload, value=response: value)
+        result = attach_stock(
+            data, "typo", lambda _payload: {"available": False, "reason": "Unknown material"}
+        )
+        self.assertFalse(result["available"])
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["reason"], "Unknown material")
+
+    def test_unknown_material_readings_report_bounded_actionable_errors(self):
+        data = snapshot([site(i) for i in range(10)], world={"epoch": "world"})
+
+        def request(payload):
+            return {
+                "available": True,
+                "world_epoch": "world",
+                "material": "INORGANIC:STEEL",
+                "sites": [
+                    {
+                        "id": id,
+                        "stock": {
+                            "matched": False,
+                            "complete": False,
+                            "resource_pile": {
+                                "complete": False,
+                                "error_count": 1,
+                                "errors": [{"context": "ARMOR_BODY", "reason": "Missing source"}],
+                            },
+                        },
+                    }
+                    for id in payload["site_ids"]
+                ],
+            }
+
+        result = search(attach_stock(data, "STEEL", request), [], material="STEEL")
+        self.assertEqual(result["material_unavailable_count"], 10)
+        self.assertEqual(len(result["material_unavailable"]), 8)
+        self.assertEqual(result["results"][0]["unknown"], 10)
+        self.assertFalse(result["complete"])
+
+    def test_material_validation_precedes_game_access_and_cli_accepts_material_only(self):
+        client = Client(port=1)
+        with patch.object(client, "request") as request:
+            for material in ("", " ", False, 4, "x" * 201):
+                with self.subTest(material=material), self.assertRaises(ValueError):
+                    client.world_scan(material=material)
+            with self.assertRaises(ValueError):
+                client.world_scan(material="STEEL", catalog=True)
+            request.assert_not_called()
+        with (
+            patch.object(Client, "world_scan", return_value={}) as scan,
+            patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            self.assertEqual(main(["--port", "1", "world-scan", "--material", "STEEL"]), 0)
+            scan.assert_called_once_with([], match="any", limit=20, catalog=False, material="STEEL")
+
     def test_native_flags_distinguish_market_settlements_from_hamlets_and_names(self):
         data = snapshot(
             [

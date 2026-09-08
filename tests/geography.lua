@@ -152,6 +152,17 @@ test('controlling entity references and unknown material readers never masquerad
         assert(not next(r.armor_materials) and r.armor_materials_unavailable_count==1)
     end
 end)
+test('imported shop goods retain their source production material catalog',function()
+    local spec={getType=function()return 0 end,mat_type=0,mat_index=2}
+    env.df.resource_allotment_specifier_armor_bodyst={is_instance=function(_,v)return v==spec end}
+    local list=setmetatable({[0]=spec},{__len=function()return 1 end})
+    env.df.global.world.world_data.resource_allotments={{index=17,resource_allotments={[0]=list}}}
+    env.df.historical_entity.find=function()error('Controlling entity does not define imported material')end
+    env.dfhack.matinfo.decode=function()return {getToken=function()return 'INORGANIC:STEEL'end}end
+    local e={flag={for_sale=true},allotment=0,amount=2,production_zone_index=17,allotment_idx=0,controlling_civ=0}
+    local r=m.shops(stock_site({e}),nil,1,nil,true).entries[1].stock_allotments
+    assert(r.armor_materials_complete and r.armor_materials.ARMOR_BODY['INORGANIC:STEEL']==2)
+end)
 test('shop summaries and non-armor stock do not read production materials',function()
     env.df.global.world.world_data.resource_allotments=setmetatable({},
         {__index=function()error('Unrequested production material scan')end})
