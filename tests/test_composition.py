@@ -104,9 +104,9 @@ class CompositionTests(unittest.TestCase):
         arrived.update(state_id="arrived", effect_id="arrived")
         arrived["status"]["position"]["x"] = 0
         b = Bridge(start, [changed, arrived])
-        d = self.client(b).act(sequence(PRONE, {"type": "walk_to", "x": 1, "y": 1, "z": 0}))[
-            "dispatch"
-        ]
+        d = self.client(b).act(
+            sequence(PRONE, {"type": "walk_to", "x": 1, "y": 1, "z": 0, "posture": "keep"})
+        )["dispatch"]
         self.assertEqual(d["outcome"], "completed")
         self.assertEqual(d["progress"]["completed_stages"], 2)
         self.assertEqual(

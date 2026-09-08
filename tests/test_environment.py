@@ -94,6 +94,23 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(c.act(first["resume_action"])["dispatch"]["outcome"], "needs_input")
         self.assertEqual(len(b.inputs), 1)
 
+    def test_filling_tolerates_solid_objects_but_not_another_liquid(self):
+        v = filling("coins")
+        coins = {
+            "id": 77,
+            "type": "COIN",
+            "material_ref": {"token": "INORGANIC:GOLD"},
+            "volume_raw": 5,
+        }
+        v["adventurer"]["inventory"][0]["contents"].append(coins)
+        state = fill_state(v, 10, "WATER")
+        self.assertEqual(state["other_item_ids"], [77])
+        self.assertEqual(state["material_volume_raw"], 120)
+        self.assertEqual(state["contents_volume_raw"], 125)
+        booze = dict(coins, id=78, type="DRINK", material_ref={"token": "PLANT:ALE"})
+        v["adventurer"]["inventory"][0]["contents"].append(booze)
+        self.assertIsNone(fill_state(v, 10, "WATER"))
+
     def test_filling_rejects_unknown_capacity_volume_mixed_contents_and_truncation(self):
         for field, value in (
             ("capacity_volume_raw", None),

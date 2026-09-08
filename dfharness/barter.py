@@ -9,11 +9,14 @@ def validate_barter(action):
         if set(action) != {"type"}:
             raise ValueError("close_trade accepts no targets")
         return
-    if set(action) != {"type", "unit_id", "shop_id"} or any(
+    if set(action) - {"type", "unit_id"} not in ({"shop_id"}, {"shop_building_id"}) or any(
         type(action[k]) is not int or not 0 <= action[k] <= 2147483647
-        for k in ("unit_id", "shop_id")
+        for k in action
+        if k != "type"
     ):
-        raise ValueError("open_trade requires a merchant unit_id and a loaded Shop zone shop_id")
+        raise ValueError(
+            "open_trade requires a merchant unit_id and either shop_id (loaded zone) or shop_building_id (site record)"
+        )
 
 
 def next_barter(workflow, view):
@@ -52,7 +55,12 @@ def next_barter(workflow, view):
     if menu.get("rebuilding"):
         return {"input": {"type": "resume"}, "pending": {"kind": "catalog_rebuild"}}
     zone = menu.get("zone") or {}
-    if zone.get("id") == action["shop_id"] and zone.get("type") == "Shop":
+    wanted = (
+        zone.get("id") == action["shop_id"]
+        if "shop_id" in action
+        else zone.get("building_id") == action["shop_building_id"]
+    )
+    if wanted and zone.get("type") == "Shop":
         return result(
             "completed",
             "DF rebuilt the requested shop's trade catalog.",
@@ -60,7 +68,8 @@ def next_barter(workflow, view):
                 "value": {
                     "kind": "open_trade",
                     "unit_id": action["unit_id"],
-                    "shop_id": action["shop_id"],
+                    "shop_id": zone.get("id"),
+                    "shop_building_id": zone.get("building_id"),
                     "goods": menu["goods"]["take"],
                     "currency": menu["currency"],
                 }
@@ -77,7 +86,8 @@ def next_barter(workflow, view):
             "needs_input", "Finish the active trade edit or pending offer before changing catalogs."
         )
     ctx["catalog_submitted"] = True
-    return {
-        "input": {"type": "trade_shop", "unit_id": action["unit_id"], "shop_id": action["shop_id"]},
-        "pending": {"kind": "catalog_rebuild"},
-    }
+    command = {"type": "trade_shop", "unit_id": action["unit_id"]}
+    for key in ("shop_id", "shop_building_id"):
+        if key in action:
+            command[key] = action[key]
+    return {"input": command, "pending": {"kind": "catalog_rebuild"}}

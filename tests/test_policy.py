@@ -84,6 +84,14 @@ class HealthWatchTests(unittest.TestCase):
                 "offloaded",
             )
             self.assertIsNone(interruption(known, unavailable, [], execution_policy()))
+            # A native rest offloads the map: the current reading is deferred, not
+            # passed, and a missing baseline is still a blocker.
+            offloaded = dict(unavailable, status={"map_loaded": False})
+            self.assertIsNone(interruption(known, offloaded, [], policy))
+            self.assertEqual(
+                interruption(unavailable, offloaded, [], policy)["details"]["facts"]["reading"],
+                "initial",
+            )
         depleted = {"adventurer": {"health": {"blood_count": 0, "wounds": 0}}}
         stopped = interruption(
             known, depleted, [], execution_policy({"interrupt_on": {"blood_loss": True}})

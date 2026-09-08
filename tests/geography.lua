@@ -210,4 +210,55 @@ test('unknown location is explicit and finder failures never invent coordinates'
     finder.get_hf_data=function()error('Missing helper')end
     r=m.locate('figure',0);assert(not r.available and r.reason)
 end)
+test('overland region box reports terrain, cold, the strongest river flow and site counts',function()
+    local wd=env.df.global.world.world_data
+    wd.world_width=4;wd.world_height=3
+    wd.regions={[0]={type=0},[1]={type=1}}
+    env.df.world_region_type={[0]='Ocean',[1]='Grassland'}
+    local function vec(...)  -- zero-based native vector with a count
+        local n,v=select('#',...),{}
+        for i=1,n do v[i-1]=select(i,...)end
+        return setmetatable(v,{__len=function()return n end})
+    end
+    wd.rivers=vec({path={x=vec(1,1),y=vec(0,1)},flow=vec(5,120),end_pos={x=1,y=2}},
+        {path={x=vec(1),y=vec(1)},flow=vec(40),end_pos={x=2,y=1}})
+    wd.sites={{pos={x=2,y=1}},{pos={x=2,y=1}},{pos={x=3,y=0}}}
+    local old_biome=env.dfhack.maps.getRegionBiome
+    env.dfhack.maps.getRegionBiome=function(p)
+        return {region_id=p.x==0 and 0 or 1,elevation=p.x*10,temperature=p.y==0 and 10 or 70}
+    end
+    local r=m.overland({x0=-3,y0=0,x1=9,y1=1})
+    assert(r.available and r.x0==0 and r.x1==3 and r.y0==0 and r.y1==1 and #r.rows==2 and #r.rows[1]==4)
+    assert(r.rows[1][1].t=='Ocean' and r.rows[1][2].t=='Grassland' and r.rows[1][2].e==10)
+    assert(r.rows[1][2].r==5 and r.rows[2][2].r==120 and r.rows[1][2].temp==10 and r.rows[2][2].temp==70)
+    assert(r.rows[2][3].r==40 and r.rows[2][3].s==2 and r.rows[1][4].s==1 and r.rows[1][1].r==nil)
+    assert(r.region_travel_tiles==48)
+    assert(not m.overland({x0=2,y0=0,x1=1,y1=0}).available)
+    assert(not m.overland({x0='a',y0=0,x1=1,y1=0}).available)
+    env.dfhack.maps.getRegionBiome=old_biome
+end)
+test('embark detail encodes water, mountains and rivers per loaded world tile with an epoch',function()
+    local function vec(...)
+        local n,v=select('#',...),{}
+        for i=1,n do v[i-1]=select(i,...)end
+        return setmetatable(v,{__len=function()return n end})
+    end
+    local function grid(w,hh,fill)local g={} for x=0,w-1 do g[x]={} for y=0,hh-1 do g[x][y]=fill(x,y) end end return g end
+    local tile={pos={x=2,y=21},elevation=grid(16,16,function(x,y)return y<4 and 98 or x==15 and 150 or 100 end),
+        rivers_vertical={active=grid(16,17,function(x,y)return (x==3 and y==5) and 1 or 0 end)},
+        rivers_horizontal={active=grid(17,16,function(x,y)return (x==4 and y==5) and -1 or 0 end)}}
+    env.df.global.world.world_data.midmap_data={region_details=vec(tile)}
+    local old_biome=env.dfhack.maps.getRegionBiome
+    env.dfhack.maps.getRegionBiome=function(p)assert(p.x==2 and p.y==21);return {temperature=22}end
+    local r=m.detail(nil)
+    assert(r.available and r.epoch=='2,21' and r.tile_count==1 and #r.tiles==1 and r.embark_travel_tiles==3)
+    local t=r.tiles[1];assert(t.x==2 and t.y==21 and t.temp==22 and #t.rows==16)
+    assert(t.rows[1]=='~~~~~~~~~~~~~~~~' and t.rows[5]=='...............^')
+    assert(t.rows[6]=='...rr..........^')
+    local again=m.detail('2,21');assert(again.available and again.unchanged and again.tiles==nil and again.epoch=='2,21')
+    assert(not m.detail('other').unchanged)
+    env.df.global.world.world_data.midmap_data=nil
+    assert(not m.detail(nil).available)
+    env.dfhack.maps.getRegionBiome=old_biome
+end)
 return {passed=#names,tests=names,game_inputs=0}

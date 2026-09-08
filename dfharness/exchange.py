@@ -12,10 +12,13 @@ def validate_trade(action):
     if required - action.keys() or action.keys() - required - {
         "offer_currency",
         "request_currency",
+        "spend",
     }:
         raise ValueError(
-            "trade requires unit_id, take and give, with optional offer_currency/request_currency"
+            "trade requires unit_id, take and give, with optional offer_currency, request_currency and spend"
         )
+    if action.get("spend", "cheapest") not in ("cheapest", "native"):
+        raise ValueError("trade spend must be cheapest or native")
     if type(action["unit_id"]) is not int or not 0 <= action["unit_id"] <= 2147483647:
         raise ValueError("trade unit_id must be a nonnegative native ID")
     seen = set()
@@ -40,6 +43,21 @@ def validate_trade(action):
         raise ValueError("trade requires items or currency")
     if not seen and action.get("offer_currency", 0) == action.get("request_currency", 0):
         raise ValueError("A currency-only trade must request a verifiable balance change")
+
+
+def unrequested_transfers(action, pending, state):
+    """Non-coin items that entered or left the inventory outside the request; None when unread."""
+    before, after = pending.get("held_goods"), state.get("held_goods")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return None
+    taken = {
+        row["signature"] for row in pending["items"] if row["side"] == "take" and "signature" in row
+    }
+    given = {str(entry["item_id"]) for entry in action["give"]}
+    return {
+        "added": sorted(i for i, sig in after.items() if i not in before and sig not in taken),
+        "removed": sorted(i for i in before if i not in after and i not in given),
+    }
 
 
 def next_trade(workflow, view):
@@ -82,6 +100,15 @@ def next_trade(workflow, view):
             )
         currency = action.get("request_currency", 0) - action.get("offer_currency", 0)
         verified &= state["currency"]["player"] == pending["currency"]["player"] + currency
+        transfers = unrequested_transfers(action, pending, state)
+        if transfers is None:
+            # A contained row is selected as one item; without the inventory
+            # scope reading that narrower transfer stays unproven.
+            verified &= not any(
+                row["side"] == "take" and "container_id" in row for row in pending["items"]
+            )
+        else:
+            verified &= not transfers["added"] and not transfers["removed"]
         # Native merchant max_currency is an amount-entry bound. Overlapping shop
         # stock and personal coins can be counted twice; it is not a ledger whose
         # delta must conserve the player's balance. Verify the player and items.
@@ -96,6 +123,7 @@ def next_trade(workflow, view):
                         "take": action["take"],
                         "give": action["give"],
                         "currency_change": currency,
+                        "spend": action.get("spend", "cheapest"),
                         "player_currency": state["currency"]["player"],
                         "load": carrying_value(view),
                     }
@@ -108,6 +136,7 @@ def next_trade(workflow, view):
             "currency": state["currency"],
             "items": state["items"],
             "inventory_quantities": state["inventory"],
+            "unrequested_transfers": transfers,
         }
         counter = state.get("counter_offer")
         requested = {k: action.get(k, 0) for k in ("offer_currency", "request_currency")}

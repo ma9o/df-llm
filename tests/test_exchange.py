@@ -17,7 +17,18 @@ ACTION = {
 }
 
 
-def trade_state(name, *, stack=5, held=False, quantity=0, player=100, merchant=30, reply="Greet"):
+def trade_state(
+    name,
+    *,
+    stack=5,
+    held=False,
+    quantity=0,
+    player=100,
+    merchant=30,
+    reply="Greet",
+    goods=None,
+    container=None,
+):
     value = scene(name)
     value["menu"] = {
         "kind": "barter",
@@ -33,6 +44,7 @@ def trade_state(name, *, stack=5, held=False, quantity=0, player=100, merchant=3
         "talkline": reply,
         "currency": {"player": player, "merchant": merchant},
         "inventory": {"gem": quantity},
+        "held_goods": {"5": "cloak"} if goods is None else goods,
         "items": [
             {
                 "item_id": 10,
@@ -41,6 +53,7 @@ def trade_state(name, *, stack=5, held=False, quantity=0, player=100, merchant=3
                 "stack_size": stack,
                 "present": True,
                 "held": held,
+                **({"container_id": container} if container is not None else {}),
             }
         ],
     }
@@ -120,11 +133,82 @@ class ExchangeTests(unittest.TestCase):
         for action in (
             dict(ACTION, give=ACTION["take"]),
             dict(ACTION, offer_currency=-1),
+            dict(ACTION, spend="gold"),
             dict(ACTION, take=[{"item_id": 10, "amount": 0}]),
             {"type": "trade", "unit_id": 2, "take": [], "give": []},
         ):
             with self.subTest(action=action), self.assertRaises(ValueError):
                 validate_action(action)
+
+    def test_unrequested_transfers_cannot_verify(self):
+        bought = {"stack": 3, "quantity": 2, "player": 95, "merchant": 35, "reply": "Trade"}
+        broad = trade_state("broad", goods={"5": "cloak", "11": "gem", "12": "bag"}, **bought)
+        result = self.client(Bridge(trade_state("before"), [broad])).act(ACTION)
+        self.assertEqual(result["outcome"], "needs_input")
+        self.assertEqual(result["blocker"]["kind"], "native_trade_response")
+        self.assertEqual(
+            result["blocker"]["facts"]["unrequested_transfers"], {"added": ["12"], "removed": []}
+        )
+        exact = trade_state("exact", goods={"5": "cloak", "11": "gem"}, **bought)
+        self.assertEqual(
+            self.client(Bridge(trade_state("before"), [exact])).act(ACTION)["outcome"], "completed"
+        )
+        # A sold stack leaves by its requested ID; anything else leaving is reported.
+        sale = dict(ACTION, give=[{"item_id": 20, "amount": 1}])
+        before = trade_state("before", goods={"5": "cloak", "20": "sword"})
+        before["trade"]["inventory"]["sword"] = 1
+        before["trade"]["items"].append(
+            {
+                "item_id": 20,
+                "side": "give",
+                "signature": "sword",
+                "stack_size": 1,
+                "present": True,
+                "held": True,
+            }
+        )
+        for remaining, outcome in (
+            ({"5": "cloak", "11": "gem"}, "completed"),
+            ({"11": "gem"}, "needs_input"),
+        ):
+            after = trade_state("sold", goods=remaining, **bought)
+            after["trade"]["inventory"]["sword"] = 0
+            after["trade"]["items"].append(
+                {
+                    "item_id": 20,
+                    "side": "give",
+                    "signature": "sword",
+                    "stack_size": 1,
+                    "present": True,
+                    "held": False,
+                }
+            )
+            with self.subTest(remaining=remaining):
+                self.assertEqual(self.client(Bridge(before, [after])).act(sale)["outcome"], outcome)
+
+    def test_contained_row_needs_the_scope_reading_while_loose_rows_do_not(self):
+        bought = {"stack": 3, "quantity": 2, "player": 95, "merchant": 35, "reply": "Trade"}
+        for container, outcome in ((9, "needs_input"), (None, "completed")):
+            before, after = (
+                trade_state("before", container=container),
+                trade_state("bought", container=container, **bought),
+            )
+            for state in (before, after):
+                state["trade"].pop("held_goods")
+                state["trade"]["held_goods_unavailable"] = "bound"
+            with self.subTest(container=container):
+                result = self.client(Bridge(before, [after])).act(ACTION)
+                self.assertEqual(result["outcome"], outcome)
+                if outcome == "needs_input":
+                    self.assertIsNone(result["blocker"]["facts"]["unrequested_transfers"])
+
+    def test_spend_preference_is_validated_and_reported(self):
+        validate_action(dict(ACTION, spend="native"))
+        after = trade_state("bought", stack=3, quantity=2, player=95, merchant=35, reply="Trade")
+        result = self.client(Bridge(trade_state("before"), [after])).act(
+            dict(ACTION, spend="native")
+        )
+        self.assertEqual(result["values"][0]["spend"], "native")
 
     def test_trade_is_composable_and_completed_value_is_not_repeated_on_resume(self):
         after = trade_state("bought", stack=3, quantity=2, player=95, merchant=35)

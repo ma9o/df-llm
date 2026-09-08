@@ -109,12 +109,15 @@ def stop(message, *, unavailable=False, **facts):
 def unit_health_interruption(before, view, watches):
     previous = {u["unit_id"]: u for u in before.get("watched_units", [])}
     current = {u["unit_id"]: u for u in view.get("watched_units", [])}
+    offloaded = (view.get("status") or {}).get("map_loaded") is False
     for watch in watches:
         unit_id = watch["unit_id"]
         old, new = previous.get(unit_id, {}), current.get(unit_id, {})
         for condition, field in (("blood_loss", "blood_count"), ("new_wounds", "wound_ids")):
             if not watch.get(condition):
                 continue
+            if offloaded and new.get("available") is not True and old.get("available") is True:
+                continue  # Deferred until the local map reloads; the baseline stays.
             for when, sample in (("initial", old), ("current", new)):
                 value = sample.get(field)
                 known = sample.get("available") is True and (
@@ -155,11 +158,17 @@ def interruption(before, view, events, policy):
     rules = policy["interrupt_on"]
     old = (before.get("adventurer") or {}).get("health", {})
     new = (view.get("adventurer") or {}).get("health", {})
+    # A native rest, sleep or travel offloads the local map, and no unit can be
+    # read until it reloads. The watch is deferred, never passed: the next
+    # loaded observation is compared with the same pre-offload baseline.
+    offloaded = (view.get("status") or {}).get("map_loaded") is False
     for condition, field, compare in (
         ("blood_loss", "blood_count", lambda a, b: b < a),
         ("new_wounds", "wounds", lambda a, b: b > a),
     ):
         if not rules.get(condition):
+            continue
+        if offloaded and type(new.get(field)) is not int and type(old.get(field)) is int:
             continue
         for when, sample in (("initial", old), ("current", new)):
             value = sample.get(field)

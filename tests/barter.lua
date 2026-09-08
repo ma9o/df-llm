@@ -22,7 +22,7 @@ local env=setmetatable({ipairs=native_ipairs,df={
         buildings={containsTile=function(_,x)return x>=0 end},
         units={isVisible=function(u)return not u.hidden end,isHidden=function(u)return u.hidden or false end},
         items={getReadableDescription=function(i)profiles=profiles+1;return 'item '..i.id end,
-            getValue=function()return 0 end}}},{__index=_ENV})
+            getValue=function()return 0 end,getContainer=function(i)return i.container end}}},{__index=_ENV})
 local m=assert(load(source,'barter-fixture','t',env))({array=function()return require('json.internal'):newArray{}end,
     text=function(s)return s end})
 local function item(id,kind)
@@ -69,6 +69,10 @@ test('only requested matching goods acquire detailed profiles',function()
     assert(out.available and out.matched==2 and out.truncated and #out.items==1 and profiles==1)
     assert(out.items[1].id==0 and out.items[1].base_value==0 and out.items[1].weight_unavailable)
     assert(out.items[1].weight_kg==nil and not out.items[1].selected and not p.good[0][0].flags.weight_computed)
+    assert(out.items[1].container_id==nil)
+    p.good[0][2].container={id=7};p.goodflag[0][2].contained=true
+    local boxed=m.goods('take','ARMOR',5)
+    assert(boxed.items[2].container_id==7 and boxed.items[2].contained and boxed.items[1].container_id==nil)
 end)
 test('catalog request changes pending UI only and retains empty filter focus',function()
     reset();m.select_shop(action)

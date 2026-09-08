@@ -243,9 +243,9 @@ class NavigationTests(unittest.TestCase):
         self.assertEqual(last["dispatch"]["outcome"], "completed")
         self.assertEqual(len(b.inputs), 2)
 
-    def test_failed_direction_returns_control_instead_of_choosing_a_route(self):
+    def test_failed_direction_returns_control_when_the_route_is_direct(self):
         b = Bridge(travel_scene("before"), [travel_scene("blocked")])
-        r = self.client(b).act({"type": "travel_to", "x": 3, "y": 1})
+        r = self.client(b).act({"type": "travel_to", "x": 3, "y": 1, "route": "direct"})
         self.assertEqual(r["dispatch"]["outcome"], "no_effect")
         self.assertEqual(len(b.inputs), 1)
 

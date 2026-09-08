@@ -57,6 +57,7 @@ local attack=modules.attack({array=array,bindings=bindings,copy=wire.clone,repor
 local input_registered=false
 local lifetime=modules.session()
 local session=lifetime.open()
+local mount=modules.mount({text=text,array=array})
 local pathing=modules.pathing({health=health,movement=movement,report_events=report_events,
     same=function(a,b)return not next(wire.delta(a,b))end,
     input=function(key)gui.simulateInput(dfhack.gui.getCurViewscreen(true),key)end})
@@ -150,7 +151,9 @@ local function status(ui)
                 end
                 return #lines>0 and lines or nil
             end)
-        elseif #out.focus==1 and out.focus[1]=='dungeonmode/Default' then
+        elseif #out.focus==1 and (out.focus[1]=='dungeonmode/Default' or out.focus[1]=='dungeonmode/Travel') then
+            -- Travel shows the same native popup queue (for example "You are
+            -- approaching your destination"), and it swallows travel keys.
             local announcement=runtime.announcement()
             out.announcement_state=announcement
             if announcement.available then
@@ -216,9 +219,14 @@ end
 
 local function unit_info(u)
     local x,y,z=dfhack.units.getPosition(u)
-    return {id=u.id, name=text(dfhack.units.getReadableName(u)),
+    -- Unit IDs change whenever the local map reloads. A historical figure ID
+    -- is the stable handle; actions accept it as figure_id in place of unit_id.
+    local figure=type(u.hist_figure_id)=='number' and u.hist_figure_id>=0 and u.hist_figure_id or nil
+    local info={id=u.id, name=text(dfhack.units.getReadableName(u)),
         race=text(dfhack.units.getRaceReadableName(u)),
-        position=x and {x=x,y=y,z=z} or nil, alive=dfhack.units.isAlive(u)}
+        position=x and {x=x,y=y,z=z} or nil, alive=dfhack.units.isAlive(u), figure_id=figure}
+    if optional(function()return dfhack.units.isPet(u)end) then info.pet=true end
+    return info
 end
 
 local function navigation_position(s)
@@ -338,11 +346,16 @@ local function item_location(item)
     if not u or item.flags.hidden then return nil end
     local outer=dfhack.items.getOuterContainerRef(item)
     if outer and outer.object and df.unit:is_instance(outer.object) then
-        if outer.object.id~=u.id then return nil end
-        local loc={kind='inventory',unit_id=u.id}
+        local holder=outer.object
+        -- Another unit's load is readable only while that unit is visible, such
+        -- as a pack animal beside the adventurer.
+        if holder.id~=u.id and not (dfhack.units.isVisible(holder) and not dfhack.units.isHidden(holder)) then
+            return nil
+        end
+        local loc={kind='inventory',unit_id=holder.id}
         local container=dfhack.items.getContainer(item)
         if container then loc.container_id=container.id end
-        for _,entry in ipairs(u.inventory) do
+        for _,entry in ipairs(holder.inventory) do
             if entry.item.id==item.id then loc.mode=df.inv_item_role_type[entry.mode];loc.body_part_id=entry.body_part_id;break end
         end
         return loc
@@ -700,6 +713,10 @@ local function observe(ui,s,pending_only)
     if req.watch_units then out.watched_units=health.read(req.watch_units,s.mode=='adventure' and s.map_loaded) end
     if req.strike_state then out.strike_state=attack.state() end
     if req.native_path_state then out.native_path=pathing.state()end
+    if req.mount_state~=nil then
+        local ref=req.mount_state
+        out.mount=mount.state((type(ref)=='number' or type(ref)=='table') and ref or nil)
+    end
     if req.trade_watch then out.trade=exchange.read(req.trade_watch,interfaces(s,ui).menu)end
     if req.input_evidence_for then
         local receipt=session.receipts[req.input_evidence_for]
@@ -727,6 +744,8 @@ local function observe(ui,s,pending_only)
     if s.mode=='adventure' then
         out.navigation=navigation_info(s,false)
         if req.rest_state then out.rest=rest.state(s) end
+        if req.overland then out.overland=geography.overland(req.overland) end
+        if req.overland_detail then out.overland_detail=geography.detail(req.overland_detail.epoch) end
         if req.save_name then out.save_file=saving.file(req.save_name) end
         -- Report history belongs to the world, not the loaded local map.
         -- Preserve its cursor during travel so returning cannot replay history.
@@ -737,6 +756,11 @@ local function observe(ui,s,pending_only)
     end
     if s.map_loaded and s.mode=='adventure' then
         local target_id=req.target_unit_id or (req.action and req.action.unit_id)
+        if req.target_figure_id~=nil then
+            local hf=df.historical_figure.find(integer(req.target_figure_id,0,2147483647,'figure_id'))
+            target_id=hf and hf.unit_id>=0 and hf.unit_id or nil
+            out.target_figure={id=req.target_figure_id,known=hf~=nil,unit_id=target_id}
+        end
         local target=target_id and df.unit.find(integer(target_id,0,2147483647,'unit_id'))
         if target and dfhack.units.isVisible(target) and not dfhack.units.isHidden(target) then
             out.target_unit=unit_info(target)
@@ -765,7 +789,9 @@ local function observe(ui,s,pending_only)
                     seen[id]=true
                     local item=df.item.find(id)
                     local loc=item and item_location(item)
-                    if loc and loc.kind=='building' then
+                    local adventurer=dfhack.world.getAdventurer()
+                    if loc and (loc.kind=='building'
+                        or (loc.kind=='inventory' and adventurer and loc.unit_id~=adventurer.id)) then
                         out.nearby_items[#out.nearby_items+1]=item_info(item,0,budget,loc)
                     end
                 end
@@ -977,6 +1003,9 @@ local function act()
             and #s.open_panels==1 and s.open_panels[1]=='barter',
             'The native trade interface must be the only active panel without a prompt')
         exchange.plan(a)
+    elseif a.type=='mount_command' then
+        check(s.can_move and not s.modal,'Native animal commands require the local adventure input view')
+        mount.validate(a)
     elseif a.type=='trade_shop' then
         check(not s.modal,'Dismiss the current prompt before choosing a trade catalog')
         check(s.screen=='viewscreen_dungeonmodest' and #s.open_panels==1 and s.open_panels[1]=='barter',
@@ -1046,6 +1075,7 @@ local function act()
         elseif a.type=='click' then click(a.x,a.y,a.button or 'left')
         elseif a.type=='trade_shop' then receipt.ui_adjustment=barter.select_shop(a)
         elseif a.type=='trade_submit' then receipt.ui_adjustment=exchange.submit(a)
+        elseif a.type=='mount_command' then receipt.ui_adjustment=mount.submit(a)
         elseif a.type=='save_native' then receipt.ui_adjustment=saving.submit(a)
         elseif a.type=='resume' then -- no input
         else
@@ -1213,7 +1243,9 @@ local function dispatch()
         local receipt=session.receipts[last_action_id or session.pending]
         response.ready=view.status.ready_for_input and (not receipt or receipt.settled)
         response.interrupted=record.interrupted
-        response.action_error=receipt and receipt.error
+        -- A settled earlier input is history. Only an input whose delivery is
+        -- still unknown, or that failed without settling, blocks a new dispatch.
+        response.action_error=receipt and not receipt.settled and receipt.error or nil
         return response
     elseif req.op=='finish_dispatch' then
         local record=session.dispatches[req.action_id]
@@ -1310,11 +1342,13 @@ local function dispatch()
         local items,truncated=nearby_items(s,req.radius,{catalog=catalog,limit=limit,item_type=req.item_type})
         return finish_items({state_id=state_id(s,ui_rows()),items=items,truncated=truncated,position=s.position,
             scope='Visible ground roots and their visible contents; type filter applies to roots. Furniture: items --building ID'})
+    elseif req.op=='companions' then
+        return mount.companions()
     elseif req.op=='item' then
         integer(req.item_id,0,2147483647,'item_id')
         local item=df.item.find(req.item_id)
         local location=item and item_location(item)
-        check(location,'Item is not carried by the adventurer, on visible ground, or in visible furniture storage')
+        check(location,'Item is not carried by the adventurer or a visible unit, on visible ground, or in visible furniture storage')
         return item_info(item,0,nil,location)
     elseif req.op=='keys' then
         local out=array()

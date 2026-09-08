@@ -42,8 +42,45 @@ end
 local function contents(item)
     return dfhack.items.getContainedItems(item)
 end
+-- DF pays an offer greedily with the largest coins it may draw on. The purse
+-- list is the pending interface's candidate coin stacks, so keeping only the
+-- cheapest denominations that cover the offer is a selection edit like the
+-- goods flags. Coin value is decoded from the material and checked against
+-- DF's own purse total before it is trusted.
+local function coin_value(item)
+    local info=dfhack.matinfo.decode(item)
+    assert(info and info.material and type(info.material.material_value)=='number','Coin material is unavailable')
+    return math.floor(info.material.material_value/2)
+end
+local function purse(p,plan)
+    local stacks,total={},0
+    assert(#p.your_currency<=LIMIT,'Purse exceeds the reading bound')
+    for i,item in ipairs(p.your_currency)do
+        local per_coin=coin_value(item)
+        local value=per_coin*integer(item:getStackSize(),1,2147483647,'coin stack size')
+        stacks[#stacks+1]={index=i,value=value,per_coin=per_coin};total=total+value
+    end
+    assert(total==p.max_currency[1],'Purse valuation differs from the native amount; coin values are undecoded')
+    if plan.spend=='native' or plan.currency[1]==0 then return nil end
+    table.sort(stacks,function(a,b)
+        return a.per_coin<b.per_coin or (a.per_coin==b.per_coin and a.index<b.index)
+    end)
+    local keep,covered,limit={},0,nil
+    for _,s in ipairs(stacks)do
+        if limit and s.per_coin>limit then break end
+        keep[s.index]=true;covered=covered+s.value
+        if covered>=plan.currency[1] and not limit then limit=s.per_coin end
+    end
+    assert(covered>=plan.currency[1],'The purse cannot cover the offered currency')
+    return keep
+end
+local SCOPE_LIMIT=512
+local COIN=assert(df.item_type.COIN,'Native coin item type is unavailable')
 local function inventory(player)
-    local held,totals,seen={},{},0
+    -- held: every item in the adventurer's inventory tree. goods: the non-coin
+    -- part keyed by ID string, so a verifier can prove no unrequested item
+    -- entered or left the inventory. Coins move through native currency.
+    local held,totals,goods,seen={},{},require('json.internal'):newObject{},0
     local function visit(item,depth)
         if held[item.id]then return end
         seen=seen+1;assert(seen<=LIMIT and depth<=16,'Trade inventory exceeds the reading bound')
@@ -51,11 +88,12 @@ local function inventory(player)
         local key=signature(item)
         held[item.id]={amount=amount,signature=key}
         totals[key]=(totals[key] or 0)+amount
+        if item:getType()~=COIN then goods[tostring(item.id)]=key end
         for _,child in ipairs(contents(item))do visit(child,depth+1)end
     end
     assert(#player.inventory<=LIMIT,'Trade inventory exceeds the reading bound')
     for _,entry in ipairs(player.inventory)do visit(entry.item,0)end
-    return held,totals
+    return held,totals,goods,seen
 end
 function M.read(action,menu)
     local out={available=false,items=h.array(),inventory={}}
@@ -64,7 +102,9 @@ function M.read(action,menu)
         assert(p.merchant and p.merchant.id==action.unit_id,'The native trade has a different merchant')
         local player=assert(dfhack.world.getAdventurer(),'Local adventurer is unavailable')
         assert(p.your_trader and p.your_trader.id==player.id,'The native trader is not the adventurer')
-        local held,totals=inventory(player)
+        local held,totals,goods,seen=inventory(player)
+        if seen<=SCOPE_LIMIT then out.held_goods=goods
+        else out.held_goods_unavailable='Inventory exceeds the '..SCOPE_LIMIT..'-item scope reading bound' end
         for _,side in ipairs({'take','give'})do
             assert(type(action[side])=='table' and #action[side]<=32,'Invalid trade item list')
             for _,entry in ipairs(action[side])do
@@ -75,6 +115,8 @@ function M.read(action,menu)
                     row.stack_size=integer(item:getStackSize(),0,2147483647,'native stack size')
                     row.signature=signature(item)
                     out.inventory[row.signature]=totals[row.signature] or 0
+                    local container=dfhack.items.getContainer(item)
+                    if container then row.container_id=container.id end
                 end
                 out.items[#out.items+1]=row
             end
@@ -134,15 +176,19 @@ function M.plan(action)
             local amount=wanted[item.id]
             assert(type(flags[i].selected)=='boolean' and type(flags[i].contained)=='boolean','Native trade flags are unavailable')
             if amount then
-                assert(not flags[i].contained and not dfhack.items.getContainer(item),
-                    'Contained-item trade scope is unsupported; no selection was made')
+                -- The native contained flag marks a row already included through
+                -- its selected container: that transfer belongs to the container.
+                -- A row stored inside an unselected merchant container is one
+                -- native selection for that item alone, verified item by item.
+                assert(not flags[i].contained,
+                    'The row is already included through its selected container; select the item itself')
                 if side=='give' then
                     assert(roles[item.id]==df.inv_item_role_type.Hauled
                         or roles[item.id]==df.inv_item_role_type.Weapon,
                         'Sale item must be held separately; remove or take it from its container first')
                 end
                 assert(#contents(item)==0,'Trading a nonempty container includes its contents; this action only supports items without contents')
-                assert(item:getType()~=df.item_type.COINS,'Use native currency amounts instead of selecting coin items')
+                assert(item:getType()~=COIN,'Use native currency amounts instead of selecting coin items')
                 assert(amount<=item:getStackSize(),'Requested quantity exceeds the native stack')
                 rows[#rows+1]={index=i,amount=amount}
                 wanted[item.id]=nil;total=total-1
@@ -157,6 +203,9 @@ function M.plan(action)
     -- Price acceptance remains entirely with the game's trade handler.
     assert(next(selected) or plan.currency[0]~=0 or plan.currency[1]~=0,'The requested offer is empty')
     assert(next(selected) or plan.currency[0]~=plan.currency[1],'A currency-only trade requires a verifiable balance change')
+    plan.spend=action.spend or 'cheapest'
+    assert(plan.spend=='cheapest' or plan.spend=='native','Unknown spend preference')
+    plan.purse=purse(p,plan)
     plan.button=trade_button() -- Resolve before any pending offer writes.
     return p,plan
 end
@@ -170,8 +219,12 @@ function M.submit(action)
         end
         p.currency_trade[side]=plan.currency[side]
     end
+    if plan.purse then
+        local v=p.your_currency
+        for i=#v-1,0,-1 do if not plan.purse[i] then v:erase(i) end end
+    end
     h.click(plan.button.x,plan.button.y)
-    return {adapter='native_barter_offer_and_character_button',submitted=true}
+    return {adapter='native_barter_offer_and_character_button',submitted=true,spend=plan.spend}
 end
 return M
 end

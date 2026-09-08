@@ -21,6 +21,13 @@ SEMANTIC = {
     "remove",
     "drop",
     "stow",
+    "pack",
+    "unpack",
+    "mount",
+    "dismount",
+    "claim_pet",
+    "lead_animal",
+    "stop_leading",
     "walk_to",
     "travel_to",
     "end_travel",
@@ -72,6 +79,12 @@ MENU_ACTIONS = {
     "wield": ("A_INV_REMOVE", {"REMOVE_ITEM"}, "inventory"),
     "drop": ("A_INV_DROP", {"DROP_ITEM"}, "inventory"),
     "stow": ("A_INV_PUTIN", {"PUT_ITEM"}, "inventory"),
+    "pack": ("A_INV_PUTIN", {"PUT_ITEM"}, "inventory"),
+    "unpack": (
+        "A_GROUND",
+        {"ENVIRONMENT_TAKE_FROM_PACK_ANIMAL", "ENVIRONMENT_TAKE_ITEM_FROM_CONTAINER"},
+        "option_list",
+    ),
 }
 
 
@@ -79,6 +92,18 @@ def validate_action(action):
     if not isinstance(action, dict) or action.get("type") not in SEMANTIC | PRIMITIVES:
         raise ValueError("Unknown action type")
     kind = action["type"]
+    if "figure_id" in action:
+        # A historical figure ID is the stable handle for a unit across map
+        # reloads; it stands in for unit_id and is resolved at every step.
+        if "unit_id" in action:
+            raise ValueError("Give unit_id or figure_id, not both")
+        figure = action["figure_id"]
+        if type(figure) is not int or not 0 <= figure <= 2147483647:
+            raise ValueError("figure_id must be a nonnegative native historical figure ID")
+        probe = {k: v for k, v in action.items() if k != "figure_id"}
+        probe["unit_id"] = figure
+        validate_action(probe)
+        return
     if kind == "trade":
         from .exchange import validate_trade
 
@@ -123,6 +148,18 @@ def validate_action(action):
         if set(action) != {"type"}:
             raise ValueError("end_travel accepts no targets or options")
         return
+    if kind in ("mount", "dismount", "claim_pet", "lead_animal", "stop_leading"):
+        from .mount import validate_mount
+
+        validate_mount(action)
+        return
+    if kind in ("pack", "unpack"):
+        if set(action) != {"type", "item_id", "unit_id"} or any(
+            type(action[k]) is not int or not 0 <= action[k] <= 2147483647
+            for k in ("item_id", "unit_id")
+        ):
+            raise ValueError("pack and unpack require item_id and the pack animal's unit_id")
+        return
     if kind in ("set_gait", "set_sneaking"):
         from .movement import validate_movement
 
@@ -157,8 +194,10 @@ def validate_action(action):
             raise ValueError("set_posture requires posture=standing or prone")
         return
     if kind == "travel_to":
-        if action.keys() - {"type", "x", "y", "arrival_radius"}:
+        if action.keys() - {"type", "x", "y", "arrival_radius", "route"}:
             raise ValueError("Unknown travel_to fields")
+        if action.get("route", "auto") not in ("auto", "direct"):
+            raise ValueError("route must be auto or direct")
         for field in ("x", "y"):
             if type(action.get(field)) is not int or not 0 <= action[field] <= 2147483647:
                 raise ValueError(field + " must be a nonnegative integer")
@@ -205,7 +244,11 @@ def validate_action(action):
     if kind == "stow":
         allowed.add("container_id")
     if kind == "walk_to":
-        allowed = {"type", "x", "y", "z", "arrival_radius"} | ROUTE_FIELDS
+        allowed = {"type", "x", "y", "z", "arrival_radius", "absolute", "posture"} | ROUTE_FIELDS
+        if type(action.get("absolute", False)) is not bool:
+            raise ValueError("absolute must be boolean")
+        if action.get("posture", "stand") not in ("stand", "keep"):
+            raise ValueError("posture must be stand or keep")
     if action.keys() - allowed:
         raise ValueError("Unknown action fields: " + ", ".join(sorted(action.keys() - allowed)))
 
@@ -302,6 +345,22 @@ def next_walk(view, target, constraints, arrival_radius=0, *, context=None):
         and max(abs(start[k] - target[k]) for k in ("x", "y")) <= arrival_radius
     ):
         return result("completed", "Reached the requested distance from the target.")
+    # Sleeping or dismounting can leave the character prone, and a prone walk
+    # is a crawl. Standing is a determined prerequisite of walking anywhere.
+    if (
+        (view.get("adventurer") or {}).get("on_ground") is True
+        and view["status"].get("can_move")
+        and (constraints or {}).get("posture") != "keep"
+    ):
+        if context is not None and context.get("stand_sent"):
+            return result(
+                "needs_input",
+                "The character is still prone after the stand command; it was not repeated.",
+                {"blocker_kind": "posture", "facts": {"on_ground": True}},
+            )
+        if context is not None:
+            context["stand_sent"] = True
+        return {"input": {"type": "key", "key": "A_STANCE"}}
     native = next_native_walk(view, target, constraints, arrival_radius, context)
     if native is not None:
         return native
@@ -475,7 +534,10 @@ def tasks_for(action):
                 for i in action.get("replace", [])
             ]
         return tasks
-    return [{"kind": kind, "item_id": target, "container_id": action.get("container_id")}]
+    task = {"kind": kind, "item_id": target, "container_id": action.get("container_id")}
+    if kind in ("pack", "unpack"):
+        task["unit_id"] = action["unit_id"]
+    return [task]
 
 
 def satisfied(task, view):
@@ -501,6 +563,11 @@ def satisfied(task, view):
         )
     if kind == "stow":
         return carried and item.get("location", {}).get("container_id") == task["container_id"]
+    if kind == "pack":
+        location = item.get("location", {})
+        return location.get("kind") == "inventory" and location.get("unit_id") == task["unit_id"]
+    if kind == "unpack":
+        return carried
     if kind in ("remove", "wield"):
         return (
             carried
@@ -620,6 +687,15 @@ def travel_facts(action, travel, pending=None):
 
 
 def next_travel(workflow, view):
+    from .overland import (
+        EMBARK_TRAVEL_TILES,
+        fine_step,
+        heading,
+        next_aim,
+        resolve_detail,
+        sidestep,
+    )
+
     action, ctx = workflow["action"], workflow.setdefault("context", {})
     travel = view["status"].get("travel")
     if not travel:
@@ -666,22 +742,74 @@ def next_travel(workflow, view):
         return result(
             "completed", "Arrival verified in travel coordinates; travel mode remains open."
         )
+    # Overland routing aims at a detour probe, the current waypoint, or the
+    # destination. The game still decides every move.
+    aim, decision = next_aim(action, ctx, view, p)
+    if decision:
+        return decision
+    final = aim == {"x": action["x"], "y": action["y"]}
+    probing = bool(ctx.get("detour_target"))
+    aim_distance = max(abs(aim["x"] - p["x"]), abs(aim["y"] - p["y"]))
     # A failed verifier still owns the last input. Resume may observe a late
     # effect, but must not turn the same unchanged position into another move.
     pending = ctx.get("travel_pending")
     if pending and p == pending["position"]:
-        return result(
-            "no_effect",
-            "Travel did not advance; the previous input was not repeated.",
-            travel_facts(action, travel, pending),
-        )
+        if action.get("route", "auto") != "auto":
+            return result(
+                "no_effect",
+                "Travel did not advance; the previous input was not repeated.",
+                travel_facts(action, travel, pending),
+            )
+        if final and distance <= EMBARK_TRAVEL_TILES and not pending.get("probe"):
+            # Overland moves land on whole embark tiles and the game refuses to
+            # step onto a site's own tile; the party stands beside the target.
+            return result(
+                "completed",
+                "Arrival verified within one native travel stride; the game refused the last step onto the destination tile. Travel mode remains open.",
+                {
+                    "position": p,
+                    "destination": {k: action[k] for k in ("x", "y")},
+                    "distance": distance,
+                },
+            )
+        # The game refused that move: terrain. Probe sideways along the
+        # obstacle; a different direction is a new decision, not a replay.
+        probe = sidestep(ctx, p, pending, bounds)
+        if probe is None:
+            return result(
+                "needs_input",
+                "Overland travel is blocked here in every probed direction; choose another route.",
+                {
+                    "blocker_kind": "travel_blocked",
+                    "facts": {
+                        "position": p,
+                        "aim": aim,
+                        "destination": {k: action[k] for k in ("x", "y")},
+                        "plan": ctx.get("overland_plan"),
+                        "detours": ctx.get("detours"),
+                    },
+                },
+            )
+        aim, final, probing = probe, False, True
+        aim_distance = max(abs(aim["x"] - p["x"]), abs(aim["y"] - p["y"]))
+        ctx.pop("travel_pending", None)
+        pending = None
+    elif pending and not pending.get("probe"):
+        # A move toward the aim succeeded: the obstacle search starts afresh.
+        ctx.pop("sidestep", None)
     if pending and pending.get("expected") and p != pending["expected"]:
         return result(
             "needs_input",
             "The site travel step reached different coordinates than expected.",
             travel_facts(action, travel, pending),
         )
-    if pending and not pending.get("expected") and distance >= pending["distance"]:
+    if (
+        pending
+        and not pending.get("expected")
+        and not pending.get("fine")
+        and pending.get("aim") == aim
+        and aim_distance >= pending["distance"]
+    ):
         return result(
             "needs_input",
             "Travel changed position without approaching the waypoint; inspect the observed coordinates.",
@@ -690,8 +818,9 @@ def next_travel(workflow, view):
                 "facts": {
                     "position": p,
                     "destination": {k: action[k] for k in ("x", "y")},
+                    "aim": aim,
                     "previous_position": pending["position"],
-                    "distance": distance,
+                    "distance": aim_distance,
                     "previous_distance": pending["distance"],
                     "site_zoom": travel.get("site_zoom"),
                 },
@@ -716,7 +845,7 @@ def next_travel(workflow, view):
         )
     grid = (view.get("navigation") or {}).get("site_grid")
     if grid:
-        step = site_travel_step(grid, p, action, action.get("arrival_radius", 0))
+        step = site_travel_step(grid, p, aim, action.get("arrival_radius", 0) if final else 1)
         if step is None:
             return result(
                 "needs_input",
@@ -725,17 +854,58 @@ def next_travel(workflow, view):
         dx, dy, direction = step
         ctx["travel_pending"] = {
             "position": deepcopy(p),
-            "distance": distance,
+            "distance": aim_distance,
+            "aim": aim,
+            "probe": probing,
             "expected": {"x": p["x"] + dx, "y": p["y"] + dy, "z": p["z"]},
             "direction": direction,
         }
         return {"input": {"type": "key", "key": "A_MOVE_" + direction.upper()}}
-    dx, dy = action["x"] - p["x"], action["y"] - p["y"]
+    # Embark-level terrain around the party decides the actual move when the
+    # game holds it: water, mountains and warm rivers are walked around, and a
+    # waypoint that cannot be approached any further is skipped.
+    detail = resolve_detail(view) if action.get("route", "auto") == "auto" else None
+    fine = None
+    for _ in range(64):
+        fine = fine_step(detail, p, aim) if detail else None
+        if fine is None or fine["progress"]:
+            break
+        plan = ctx.get("overland_plan") or []
+        if not probing and not final and ctx.get("waypoint", 0) < len(plan) - 1:
+            ctx["waypoint"] = ctx.get("waypoint", 0) + 1
+        else:
+            ctx.pop("detour_target", None)
+            probe = sidestep(ctx, p, {"direction": heading(p, aim)}, bounds)
+            if probe is None:
+                return result(
+                    "needs_input",
+                    "Overland travel cannot approach the destination through the loaded terrain; choose another route.",
+                    {
+                        "blocker_kind": "travel_blocked",
+                        "facts": {
+                            "position": p,
+                            "aim": aim,
+                            "destination": {k: action[k] for k in ("x", "y")},
+                            "plan": ctx.get("overland_plan"),
+                            "detours": ctx.get("detours"),
+                        },
+                    },
+                )
+            probing = True
+        aim, decision = next_aim(action, ctx, view, p)
+        if decision:
+            return decision
+        final = aim == {"x": action["x"], "y": action["y"]}
+        aim_distance = max(abs(aim["x"] - p["x"]), abs(aim["y"] - p["y"]))
+    if fine and fine["progress"]:
+        dx, dy = fine["direction"]
+    else:
+        dx, dy = aim["x"] - p["x"], aim["y"] - p["y"]
     direction = ("N" if dy < 0 else "S" if dy > 0 else "") + (
         "W" if dx < 0 else "E" if dx > 0 else ""
     )
     stride = ctx.get("travel_stride", {})
-    if stride.get("size", 0) > 1 and stride.get("site_zoom") == travel.get("site_zoom"):
+    if final and stride.get("size", 0) > 1 and stride.get("site_zoom") == travel.get("site_zoom"):
         size = stride["size"]
         projected = max(abs(d - (size if d > 0 else -size if d < 0 else 0)) for d in (dx, dy))
         if projected >= distance:
@@ -756,7 +926,11 @@ def next_travel(workflow, view):
             )
     ctx["travel_pending"] = {
         "position": deepcopy(p),
-        "distance": distance,
+        "distance": aim_distance,
+        "aim": aim,
+        "probe": probing,
+        # A terrain-routed move may legitimately move away from the aim.
+        "fine": bool(fine and fine["progress"]),
         "site_zoom": travel.get("site_zoom"),
         "direction": direction,
     }
@@ -796,7 +970,30 @@ def close_travel_map(workflow, view):
     return {"input": {"type": "key", "key": panel["close_key"]}}
 
 
+def resolve_figure(workflow, view):
+    """Replace figure_id with the figure's current unit ID, or explain why not."""
+    action = workflow["action"]
+    if "figure_id" not in action:
+        return workflow, None
+    target = view.get("target_unit") or {}
+    if target.get("figure_id") != action["figure_id"] or type(target.get("id")) is not int:
+        return workflow, result(
+            "needs_input",
+            "The historical figure is not loaded and visible right now.",
+            {
+                "blocker_kind": "figure_unavailable",
+                "facts": {"figure_id": action["figure_id"], "figure": view.get("target_figure")},
+            },
+        )
+    resolved = {k: v for k, v in action.items() if k != "figure_id"}
+    resolved["unit_id"] = target["id"]
+    return dict(workflow, action=resolved), None
+
+
 def next_step(workflow, view):
+    workflow, blocked = resolve_figure(workflow, view)
+    if blocked:
+        return blocked
     action, ctx = workflow["action"], workflow.setdefault("context", {})
     kind = action["type"]
     if kind == "trade":
@@ -811,6 +1008,10 @@ def next_step(workflow, view):
         from .locomotion import next_locomotion
 
         return next_locomotion(workflow, view)
+    if kind in ("mount", "dismount", "claim_pet", "lead_animal", "stop_leading"):
+        from .mount import next_mount
+
+        return next_mount(workflow, view)
     if kind in ("open_trade", "close_trade"):
         from .barter import next_barter
 
@@ -879,7 +1080,11 @@ def next_step(workflow, view):
             ctx["item_before"] = contained_state(original)
     if kind == "walk_to":
         target = tasks[0]["target"]
-        anchor = ctx.setdefault("target_absolute", absolute(view, target))
+        # absolute targets are world tiles already; local ones are anchored to
+        # this observation's origin so re-bases cannot move them.
+        anchor = ctx.setdefault(
+            "target_absolute", dict(target) if action.get("absolute") else absolute(view, target)
+        )
         tasks[0]["target"] = relative(view, anchor)
         if action.get("blocked_tiles"):
             excluded = ctx.setdefault(
@@ -895,20 +1100,25 @@ def next_step(workflow, view):
             return result("no_effect", "The item list did not scroll; no selection was retried.")
         if pending["kind"] == "close" and menu_signature(view) == pending["before"]:
             return result("no_effect", "The menu did not close; the input was not repeated.")
+        if pending["kind"] == "amount" and menu_signature(view) == pending["before"]:
+            return result(
+                "no_effect", "The quantity confirmation changed nothing; it was not repeated."
+            )
         if pending["kind"] == "open" and not view.get("menu"):
             return result(
                 "needs_input", "The game did not offer the requested inventory/pickup menu."
             )
         if pending["kind"] == "select" and index < len(tasks) and not satisfied(tasks[index], view):
             if (view.get("menu") or {}).get("choosing_amount"):
-                return result(
-                    "needs_input",
-                    "The game requires a pickup quantity; the item has not yet been acquired.",
-                )
-            # Put-in is a two-stage menu. The second stage chooses the caller's
-            # specified destination; all other unverified selections stop.
-            if (
-                tasks[index]["kind"] != "stow"
+                # unpack answers the whole-stack prompt below; other item
+                # actions leave the quantity choice to the controller.
+                if tasks[index]["kind"] != "unpack":
+                    return result(
+                        "needs_input",
+                        "The game requires a pickup quantity; the item has not yet been acquired.",
+                    )
+            elif (
+                tasks[index]["kind"] not in ("stow", "pack")
                 or pending.get("destination")
                 or (view.get("menu") or {}).get("context_item_id") != tasks[index]["item_id"]
             ):
@@ -916,7 +1126,8 @@ def next_step(workflow, view):
                     "needs_input",
                     "The selected item action did not satisfy its inventory postcondition.",
                 )
-            ctx["stow_destination"] = True
+            else:
+                ctx["stow_destination"] = True
     while index < len(tasks) and satisfied(tasks[index], view):
         index += 1
         ctx["task_index"] = index
@@ -961,7 +1172,11 @@ def next_step(workflow, view):
     # Removing worn equipment is a prerequisite of the controller's drop/stow
     # objective. Retain it as an ordinary checkpointed task under the same policy.
     # Never select or dispose of any other equipment to make room in the hands.
-    if task["kind"] in ("drop", "stow") and item.get("mode") in ("Worn", "WrappedAround"):
+    if task["kind"] in ("drop", "stow", "pack") and item.get("mode") in (
+        "Worn",
+        "WrappedAround",
+        "Flask",
+    ):
         tasks.insert(index, {"kind": "remove", "item_id": task["item_id"]})
         return next_step(workflow, view)
     if task["kind"] == "pickup":
@@ -974,14 +1189,67 @@ def next_step(workflow, view):
             if not view["status"].get("can_move"):
                 return result("needs_input", "Pickup approach requires the default adventure view.")
             return next_walk(view, destination, {}, context=ctx)
+    elif task["kind"] == "unpack":
+        animal = view.get("target_unit") or {}
+        if item.get("location", {}).get("unit_id") != task["unit_id"]:
+            return result(
+                "needs_input",
+                "The item is not carried by the specified pack animal.",
+                {"blocker_kind": "item_unavailable", "facts": {"location": item.get("location")}},
+            )
+        if animal.get("id") != task["unit_id"] or not animal.get("position"):
+            return result("needs_input", "The specified pack animal is not currently visible.")
+        if (
+            max(abs(animal["position"][k] - view["status"]["position"][k]) for k in ("x", "y")) > 1
+            or animal["position"]["z"] != view["status"]["position"]["z"]
+        ):
+            if view.get("menu"):
+                return close_menu(view)
+            if not view["status"].get("can_move"):
+                return result(
+                    "needs_input", "Approaching the animal requires the default adventure view."
+                )
+            return next_walk(view, animal["position"], {}, arrival_radius=1, context=ctx)
     elif task["item_id"] not in inventory(view):
         return result("needs_input", "The requested inventory item is no longer carried.")
     if task["kind"] == "stow" and task["container_id"] not in inventory(view):
         return result("needs_input", "The specified destination container is not carried.")
+    if task["kind"] == "pack" and not ctx.get("stow_destination"):
+        animal = view.get("target_unit") or {}
+        if animal.get("id") != task["unit_id"] or not animal.get("position"):
+            return result("needs_input", "The specified pack animal is not currently visible.")
+        if (
+            max(abs(animal["position"][k] - view["status"]["position"][k]) for k in ("x", "y")) > 1
+            or animal["position"]["z"] != view["status"]["position"]["z"]
+        ):
+            if view.get("menu"):
+                return close_menu(view)
+            if not view["status"].get("can_move"):
+                return result(
+                    "needs_input", "Approaching the animal requires the default adventure view."
+                )
+            return next_walk(view, animal["position"], {}, arrival_radius=1, context=ctx)
     key, kinds, family = MENU_ACTIONS[task["kind"]]
     menu = view.get("menu")
     if menu:
         if menu.get("choosing_amount"):
+            # The native prompt defaults to the whole stack. unpack takes it all
+            # through the game's own confirmation; any other amount is a
+            # controller choice that stays a blocker.
+            if task["kind"] == "unpack" and not ctx.get("amount_sent"):
+                if type(menu.get("amount")) is int and menu.get("amount") == menu.get("amount_max"):
+                    ctx["amount_sent"] = True
+                    # The prompt is confirmed by its own Okay control, located
+                    # uniquely in the current character layer.
+                    return {
+                        "input": {"type": "click_text", "text": "Okay"},
+                        "pending": {"kind": "amount", "before": menu_signature(view)},
+                    }
+                if ctx.get("amount_polls", 0) < 3:
+                    # DF fills the default amount on its next render; observe
+                    # again before deciding that the default is not the stack.
+                    ctx["amount_polls"] = ctx.get("amount_polls", 0) + 1
+                    return {"input": {"type": "resume"}}
             return result(
                 "needs_input",
                 "The game requires a pickup quantity; the item has not yet been acquired.",
@@ -992,13 +1260,28 @@ def next_step(workflow, view):
             for o in menu.get("options", [])
             if (
                 ctx.get("stow_destination")
+                and task["kind"] == "stow"
                 and o.get("container_id") == target
                 and o.get("kind") == "ENVIRONMENT_PLACE_IN_IT_CONTAINER"
+            )
+            or (
+                ctx.get("stow_destination")
+                and task["kind"] == "pack"
+                and o.get("pack_animal_id") == task["unit_id"]
+                and o.get("kind") == "ENVIRONMENT_PLACE_ON_PACK_ANIMAL"
             )
             or (
                 not ctx.get("stow_destination")
                 and o.get("item_id") == target
                 and o.get("kind") in kinds
+                and (
+                    task["kind"] != "unpack"
+                    or o.get("pack_animal_id") == task["unit_id"]
+                    # Contents of a container on the animal are listed as
+                    # take-from-container rows; the item's verified location
+                    # already ties it to this animal.
+                    or o.get("kind") == "ENVIRONMENT_TAKE_ITEM_FROM_CONTAINER"
+                )
             )
         ]
         if matches:

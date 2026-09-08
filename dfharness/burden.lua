@@ -40,12 +40,20 @@ function M.read(unit)
         assert(unit,'No loaded unit is available')
         assert(df.global.gamemode==df.game_mode.ADVENTURE,'Burden helper requires Adventure mode')
         assert(boolean(unit.flags2.calculated_bodyparts,'Body cache flag'),'Native body cache requires refresh')
-        assert(not boolean(unit.flags1.rider,'Rider flag') and not boolean(unit.flags1.ridden,'Ridden flag'),
-            'Mounted burden is not supported')
+        assert(not boolean(unit.flags1.rider,'Rider flag'),
+            'Riding: movement speed is the mount\'s, so the rider load is not a movement burden')
+        assert(not boolean(unit.flags1.ridden,'Ridden flag'),'Mounted burden is not supported')
         assert(not unit.uwss_att_change or not dfhack.units.isHidingCurse(unit),
             'Hidden-curse burden is not supported')
     end)
     local function checked()assert(valid,tostring(why))end
+    result.riding=reading(function()
+        local rider=boolean(unit.flags1.rider,'Rider flag')
+        local index=df.unit_relationship_type and df.unit_relationship_type.RiderMount
+        local mount_id=rider and type(index)=='number' and unit.relationship_ids[index] or nil
+        return {riding=rider,mount_id=mount_id,
+            meaning=rider and 'Movement uses the mount; pack cargo onto it to lighten the rider' or 'On foot'}
+    end)
     result.capacity=reading(function()
         checked()
         local strength=dfhack.units.getPhysicalAttrValue(unit,df.physical_attribute_type.STRENGTH)

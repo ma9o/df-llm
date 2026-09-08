@@ -13,6 +13,15 @@ from .policy import MAX_DISPATCH_INPUTS
 from .rpc import DFHackError, DispatchError, run_command
 
 
+def unit_ref(value):
+    """A unit ID, or hf:FIGURE_ID for the stable historical figure handle."""
+    if value.isdigit():
+        return int(value)
+    if value.startswith("hf:") and value[3:].isdigit():
+        return value
+    raise argparse.ArgumentTypeError("expected a unit ID or hf:FIGURE_ID")
+
+
 def parser():
     p = argparse.ArgumentParser(
         description="Control a running Dwarf Fortress through DFHack; adventure mode first.",
@@ -125,7 +134,7 @@ def parser():
     brief.add_argument("--text", action="store_true")
     brief.add_argument("--since", help="Return changes against a previous brief read_ref")
     unit = command("unit")
-    unit.add_argument("unit_id", type=int)
+    unit.add_argument("unit_id", type=unit_ref)
     unit.add_argument("--view", choices=["concise", "full"], default="concise")
     unit.add_argument("--since", help="Return exact changes against a previous concise read_ref")
     unit.add_argument("--text", action="store_true")
@@ -206,6 +215,7 @@ def parser():
     interrupt = command("interrupt")
     interrupt.add_argument("dispatch_id")
     keys = command("keys")
+    command("companions")
     navigation = command("navigation")
     navigation.add_argument("--limit", type=int, default=20)
     navigation.add_argument("--view", choices=["concise", "full"], default="concise")
@@ -278,7 +288,7 @@ def parser():
         help="JSON {topic, tact?, subject_hf_id?}; may be mixed with --topic in request order",
     )
     actions["talk"] = command("talk")
-    actions["talk"].add_argument("unit_id", type=int)
+    actions["talk"].add_argument("unit_id", type=unit_ref)
     actions["talk"].add_argument(
         "--subject-hf-id", type=int, help="Native historical-figure subject for an HF topic"
     )
@@ -293,11 +303,24 @@ def parser():
     )
     actions["end-conversation"] = command("end-conversation")
     actions["open-trade"] = command("open-trade")
-    actions["open-trade"].add_argument("unit_id", type=int)
-    actions["open-trade"].add_argument("--shop", dest="shop_id", type=int, required=True)
+    actions["open-trade"].add_argument("unit_id", type=unit_ref)
+    actions["open-trade"].add_argument("--shop", dest="shop_id", type=int)
+    actions["open-trade"].add_argument(
+        "--building", dest="shop_building_id", type=int, help="Shop record ID from shops (stable)"
+    )
     actions["close-trade"] = command("close-trade")
+    for name in ("mount", "claim-pet", "lead-animal", "stop-leading"):
+        actions[name] = command(name)
+        actions[name].add_argument("unit_id", type=unit_ref)
+    actions["dismount"] = command("dismount")
+    actions["pack"] = command("pack")
+    actions["pack"].add_argument("item_id", type=int)
+    actions["pack"].add_argument("--onto", dest="unit_id", type=unit_ref, required=True)
+    actions["unpack"] = command("unpack")
+    actions["unpack"].add_argument("item_id", type=int)
+    actions["unpack"].add_argument("--from", dest="unit_id", type=unit_ref, required=True)
     actions["trade"] = command("trade")
-    actions["trade"].add_argument("unit_id", type=int)
+    actions["trade"].add_argument("unit_id", type=unit_ref)
     actions["trade"].add_argument(
         "--take", type=json.loads, default=[], help="JSON list of item_id/amount pairs to receive"
     )
@@ -306,6 +329,11 @@ def parser():
     )
     actions["trade"].add_argument("--offer-currency", type=int, default=0)
     actions["trade"].add_argument("--request-currency", type=int, default=0)
+    actions["trade"].add_argument(
+        "--spend",
+        choices=["cheapest", "native"],
+        help="Coin stacks DF may draw on: cheapest denominations covering the offer (default) or native",
+    )
     actions["save-game"] = command("save-game", aliases=["quicksave"])
     actions["save-game"].add_argument("name")
     actions["save-game"].add_argument(
@@ -313,12 +341,12 @@ def parser():
     )
     actions["save-game"].set_defaults(command="save-game")
     actions["combat"] = command("combat")
-    actions["combat"].add_argument("unit_id", type=int)
+    actions["combat"].add_argument("unit_id", type=unit_ref)
     actions["combat"].add_argument(
         "--option-id", help="Explicit native move ID; further decisions are returned"
     )
     actions["strike"] = command("strike")
-    actions["strike"].add_argument("unit_id", type=int)
+    actions["strike"].add_argument("unit_id", type=unit_ref)
     actions["strike"].add_argument("--body-part-id", type=int, required=True)
     actions["strike"].add_argument(
         "--item-id", type=int, required=True, help="Weapon item ID; -1 for a natural attack"
@@ -365,6 +393,11 @@ def parser():
     for name in ("x", "y"):
         actions["travel-to"].add_argument(name, type=int)
     actions["travel-to"].add_argument("--arrival-radius", type=int, default=0)
+    actions["travel-to"].add_argument(
+        "--route",
+        choices=["auto", "direct"],
+        help="auto (default) plans around ocean, lakes and rivers and sidesteps refused moves; direct steps straight",
+    )
     actions["end-travel"] = command("end-travel")
     actions["move"] = command("move")
     actions["move"].add_argument(
@@ -400,6 +433,16 @@ def parser():
     )
     actions["walk-to"].add_argument("--max-liquid-depth", type=int)
     actions["walk-to"].add_argument("--blocked-tiles", type=json.loads)
+    actions["walk-to"].add_argument(
+        "--absolute",
+        action="store_true",
+        help="x y z are absolute world tiles (map_origin + local)",
+    )
+    actions["walk-to"].add_argument(
+        "--posture",
+        choices=["stand", "keep"],
+        help="stand (default) rises before walking; keep crawls if prone",
+    )
     actions["walk-to"].add_argument("--arrival-radius", type=int, default=0)
     actions["walk-to"].add_argument(
         "--extend-route",
@@ -431,7 +474,7 @@ def parser():
     actions["respond"] = command("respond")
     actions["respond"].add_argument("choice", choices=["continue", "stop", "finish"])
     actions["select-unit"] = command("select-unit")
-    actions["select-unit"].add_argument("unit_id", type=int)
+    actions["select-unit"].add_argument("unit_id", type=unit_ref)
     actions["key"] = command("key")
     actions["key"].add_argument("key")
     actions["click"] = command("click")
@@ -693,6 +736,8 @@ def execute(args, client=None):
                 result = client.dispatch_details(args.dispatch_id, args.section)
             elif args.command == "keys":
                 result = client.request({"op": "keys", "filter": args.filter})
+            elif args.command == "companions":
+                result = client.request({"op": "companions"})
             elif args.command == "inspect":
                 result = client.inspect(args.x, args.y, args.z)
             elif args.command == "wait-ready":
@@ -712,6 +757,8 @@ def execute(args, client=None):
                     for key in args.action_fields:
                         if getattr(args, key) is not None:
                             action[key] = getattr(args, key)
+                    if isinstance(action.get("unit_id"), str):
+                        action["figure_id"] = int(action.pop("unit_id")[3:])
                     if args.command == "choose":
                         action = {"type": "click_text", "text": args.label}
                     elif args.command == "text":

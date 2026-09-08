@@ -472,6 +472,9 @@ def compact_result(
     progress = dispatch.get("progress", {})
     if "completed_stages" in progress:
         result["completed_stages"] = progress["completed_stages"]
+    if "route" in progress:
+        # Overland travel: the coarse waypoint route the harness is steering by.
+        result["route"] = deepcopy(progress["route"])
     if outcome != "completed":
         blocker = dispatch.get("blocker", {})
         details = dispatch.get("details", {})

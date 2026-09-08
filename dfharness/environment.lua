@@ -38,6 +38,10 @@ function M.option(o)
         elseif instance('adventure_item_interact_fill_from_containerst') then
             out.operation='fill_container';out.container_id=o.container.id;out.source_container_id=o.take_from.id
             out.player_position=coord(o.pos1);out.target_position=coord(o.pos2)
+        elseif instance('adventure_environment_place_on_pack_animalst') then
+            out.operation='pack';out.item_id=o.item.id;out.pack_animal_id=o.pack_animal.id
+        elseif instance('adventure_environment_take_from_pack_animalst') then
+            out.operation='unpack';out.item_id=o.item.id;out.pack_animal_id=o.pack_animal.id
         end
     end)
     if not ok then out.details_unavailable=tostring(err):sub(1,240) end

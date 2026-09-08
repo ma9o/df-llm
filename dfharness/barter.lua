@@ -50,7 +50,8 @@ function M.menu()
         out.trader_id=assert(p.your_trader,'Missing player trader').id
         out.personal=p.personal;out.demand_only=p.demand_only
         if not p.personal and not p.demand_only then
-            out.zone=p.zone and {id=p.zone.id,type=df.civzone_type[p.zone.type]} or nil
+            out.zone=p.zone and {id=p.zone.id,type=df.civzone_type[p.zone.type],
+                building_id=p.zone.site_realization_building_id} or nil
         end
         out.rebuilding=p.buildlists~=0
         out.editing=editing(p)
@@ -94,9 +95,36 @@ function M.guard()
     if not ok then out.reason=tostring(err):sub(1,240)end
     return out
 end
+-- A site's shop record keeps its ID across map reloads while the loaded Shop
+-- zone is recreated with a new one. Resolve the record to today's zone.
+function M.zone_for_building(id)
+    local site=dfhack.world.getCurrentSite()
+    assert(site and site.realization,'The current site realization is not loaded')
+    local record
+    for _,b in ipairs(site.realization.buildings)do if b.id==id then record=b;break end end
+    assert(record,'No site shop record has this ID')
+    local base=record.civzone_id>=0 and df.building.find(record.civzone_id)
+    assert(base,'The shop building is not loaded')
+    local found
+    for _,zone in ipairs(df.global.world.buildings.other.ZONE_SHOP)do
+        if zone.site_realization_building_id==id and zone.z==base.z
+            and zone.x1>=base.x1 and zone.x2<=base.x2 and zone.y1>=base.y1 and zone.y2<=base.y2 then
+            assert(not found,'The shop record has several loaded Shop zones; pass the zone ID')
+            found=zone
+        end
+    end
+    assert(found,'No loaded Shop zone belongs to this shop record')
+    return found
+end
 function M.validate_shop(action)
     integer(action.unit_id,0,2147483647,'merchant ID')
-    integer(action.shop_id,0,2147483647,'shop zone ID')
+    local shop
+    if action.shop_building_id~=nil then
+        shop=M.zone_for_building(integer(action.shop_building_id,0,2147483647,'shop building ID'))
+    else
+        integer(action.shop_id,0,2147483647,'shop zone ID')
+        shop=df.building.find(action.shop_id)
+    end
     local p=assert(panel(),'No native trade is open')
     local current=M.menu()
     assert(current.available,current.selection_unavailable)
@@ -108,7 +136,6 @@ function M.validate_shop(action)
     assert(current.currency.offer==0 and current.currency.request==0
         and #current.draft.take==0 and #current.draft.give==0,'A pending offer must not be discarded')
     assert(p.item_filter[0]=='' and p.item_filter[1]=='','Clear the current trade filters first')
-    local shop=df.building.find(action.shop_id)
     assert(shop and df.building_civzonest:is_instance(shop) and shop.type==df.civzone_type.Shop,
         'The requested building is not a loaded Shop zone')
     assert(assigned(shop,p.merchant),'The merchant is not assigned to the requested shop')
@@ -146,6 +173,8 @@ function M.goods(side,item_type,limit)
                     type=df.item_type[item:getType()],stack_size=item:getStackSize(),
                     selected=f.selected,contained=f.contained,amount=amount,
                     quality=item:getQuality(),base_value=dfhack.items.getValue(item)}
+                local container=dfhack.items.getContainer(item)
+                if container then entry.container_id=container.id end
                 if item.flags.weight_computed then entry.weight_kg=item.weight.whole+item.weight.fraction/1000000
                 else entry.weight_unavailable='Native weight is not computed' end
                 out.items[#out.items+1]=entry

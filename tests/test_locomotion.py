@@ -74,9 +74,22 @@ class LocomotionTests(unittest.TestCase):
         bridge = Bridge(before, [after])
         done = self.client(bridge).act({"type": "move", "direction": "e"})
         self.assertEqual(done["outcome"], "completed")
+        origin = before["status"]["map_origin"]
         self.assertEqual(
             bridge.inputs,
-            [{"type": "path_to", "destination": {"x": 2, "y": 1, "z": 0}, "arrival_radius": 0}],
+            [
+                {
+                    "type": "path_to",
+                    "destination": {"x": 2, "y": 1, "z": 0},
+                    "arrival_radius": 0,
+                    # The adapter converts this against the live origin at input time.
+                    "absolute_destination": {
+                        "x": 2 + origin["x"],
+                        "y": 1 + origin["y"],
+                        "z": origin["z"],
+                    },
+                }
+            ],
         )
 
     def test_wait_frame_rebase_and_unknown_clock_do_not_imply_elapsed_time(self):

@@ -21,6 +21,8 @@ LOCAL_TARGET_ACTIONS = {
     "drink_from",
 }
 
+MOUNT_ACTIONS = {"mount", "dismount", "claim_pet", "lead_animal", "stop_leading"}
+
 
 def question(topic):
     return {"topic": topic} if isinstance(topic, str) else deepcopy(topic)
@@ -122,7 +124,7 @@ def active_workflow(workflow):
 def observation_args(workflow):
     leaf = active_workflow(workflow)
     args = {}
-    item_actions = {"pickup", "drop", "stow", "equip", "wield", "remove", "trade"}
+    item_actions = {"pickup", "drop", "stow", "pack", "unpack", "equip", "wield", "remove", "trade"}
     root_actions = workflow["action"].get("actions", [workflow["action"]])
     if any(a["type"] in item_actions for a in root_actions):
         args["receipt_state"] = True
@@ -140,8 +142,21 @@ def observation_args(workflow):
         args["save_name"] = leaf["action"]["name"]
     if leaf["action"]["type"] in ("sleep", "rest"):
         args["rest_state"] = True
+    if leaf["action"]["type"] == "travel_to" and leaf["action"].get("route", "auto") == "auto":
+        from .overland import DETAIL_CACHE
+
+        context = leaf.get("context", {})
+        box = context.get("overland_box")
+        if box and "overland_plan" not in context:
+            args["overland"] = box
+        if context.get("travel_started"):
+            # Embark-level terrain around the party; the reader skips the rows
+            # when the loaded window has not changed since the cached epoch.
+            args["overland_detail"] = {"epoch": DETAIL_CACHE.get("epoch")}
     if "unit_id" in leaf["action"]:
         args["target_unit_id"] = leaf["action"]["unit_id"]
+    if "figure_id" in leaf["action"]:
+        args["target_figure_id"] = leaf["action"]["figure_id"]
     ctx = leaf.get("context", {})
     if leaf["action"]["type"] == "trade":
         args["trade_watch"] = deepcopy(leaf["action"])
@@ -149,7 +164,14 @@ def observation_args(workflow):
             args["trade_watch"].update(verify=True, signatures=sorted(submitted["inventory"]))
     if leaf["action"]["type"] == "strike":
         args["strike_state"] = True
-    if leaf["action"]["type"] in item_actions | LOCAL_TARGET_ACTIONS | {
+    if leaf["action"]["type"] in MOUNT_ACTIONS:
+        action = leaf["action"]
+        args["mount_state"] = (
+            {"figure_id": action["figure_id"]}
+            if "figure_id" in action
+            else action.get("unit_id", True)
+        )
+    if leaf["action"]["type"] in item_actions | LOCAL_TARGET_ACTIONS | MOUNT_ACTIONS | {
         "talk",
         "combat",
         "strike",
@@ -194,12 +216,21 @@ def progress(workflow):
     if leaf and leaf["action"]["type"] == "talk" and current.get("topic_sent"):
         out["awaiting"] = {
             "condition": leaf["action"].get("completion", "reply"),
-            "unit_id": leaf["action"]["unit_id"],
+            "unit_id": leaf["action"].get("unit_id", leaf["action"].get("figure_id")),
             "utterance_verified": bool(current.get("utterance")),
         }
     if leaf and leaf["action"]["type"] in ("drink", "eat", "drink_from"):
         out["portions_consumed"] = len(current.get("receipts", []))
         out["portions_requested"] = leaf["action"].get("portions", 1)
+    if leaf and leaf["action"]["type"] == "travel_to" and "overland_plan" in current:
+        # The coarse route in travel tiles, so the controller can see where the
+        # harness is steering and how many refused moves it has probed around.
+        out["route"] = {
+            "waypoints": current["overland_plan"],
+            "waypoint": current.get("waypoint", 0),
+            "detours": current.get("detours", 0),
+            **({"detour_target": current["detour_target"]} if current.get("detour_target") else {}),
+        }
     return out
 
 
@@ -241,7 +272,12 @@ def next_composite(workflow, view):
         state = leaf.setdefault("context", {})
         if coordinates:
             field = "stairs_source" if action["type"] == "use_stairs" else "target_absolute"
-            state.setdefault(field, anchor(action))
+            state.setdefault(
+                field,
+                {k: action[k] for k in ("x", "y", "z")}
+                if action.get("absolute")
+                else anchor(action),
+            )
         if action.get("blocked_tiles"):
             state.setdefault("blocked_absolute", [anchor(p) for p in action["blocked_tiles"]])
     decision = next_step(leaf, view)

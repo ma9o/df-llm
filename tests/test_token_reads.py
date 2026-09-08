@@ -161,7 +161,7 @@ class TokenReadTests(unittest.TestCase):
         after["status"]["travel"]["exception"].update(id=0, message="")
         bridge = Bridge(before, [after])
         with patch.object(self.client, "request", side_effect=bridge):
-            first = self.client.act({"type": "travel_to", "x": 3, "y": 1})
+            first = self.client.act({"type": "travel_to", "x": 3, "y": 1, "route": "direct"})
             facts = first["blocker"]["facts"]
             self.assertEqual(facts["destination"], {"x": 3, "y": 1})
             self.assertIs(facts["site_zoom"], False)

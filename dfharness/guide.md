@@ -103,6 +103,19 @@ reads their evidence. `interrupt ID` stops further harness inputs without undoin
 input already sent.
 Game restart or world reload revokes progress; controller restarts do not.
 
+## Use stable references
+
+Unit IDs, Shop zone IDs, item IDs of shop stock and local coordinates change
+whenever the local map reloads or re-bases (rest, sleep, travel, long walks).
+Prefer the stable handles: `figure_id` from `look`, `unit` and `companions`,
+passed as `hf:FIGURE_ID` wherever a unit ID is accepted (only notable people and
+your claimed animals have one; ordinary townsfolk and shopkeepers do not, so read
+`shops --stock` keepers on each visit);
+the shop record id from `shops` with `open-trade --building`; and
+`walk-to --absolute` with world tiles (`map_origin` + local from `game-status`).
+`companions` lists your pets and mount with both IDs. Your own inventory keeps
+its item IDs.
+
 ## Keep follow-up reads small
 
 Receipts include changes; query only missing facts. `look`, `unit ID`, `brief`,

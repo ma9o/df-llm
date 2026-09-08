@@ -10,7 +10,12 @@ GROUPS = (
     (
         ("trade",),
         ("core", "local_map", "inventory", "barter", "barter_submit"),
-        "Exact native offer and guarded character-layer Trade button; verifies item quantities and player currency. Counteroffers return control. Held sale items only; containers unsupported. Live purchase, refusal, sale and no-input verification resume exercised.",
+        "Exact native offer and guarded character-layer Trade button; verifies item quantities, player currency and the absence of unrequested non-coin transfers. Counteroffers return control. Rows inside merchant containers are bought singly; nonempty containers and stowed sale items are unsupported. spend restricts the purse stacks DF may pay from, checked against DF's own purse total. Live purchase, contained-row purchase, refusal, sale and no-input verification resume exercised.",
+    ),
+    (
+        ("mount", "dismount", "claim_pet", "lead_animal", "stop_leading"),
+        ("core", "local_map", "native_path", "mount"),
+        "DF's own movement option handlers realized for an adjacent animal; rider flag, mount, pet-owner and leading relationships verified from unit state.",
     ),
     (
         ("open_trade", "close_trade"),
@@ -23,7 +28,7 @@ GROUPS = (
         "Native save finishes and the requested world file is newly written",
     ),
     (
-        ("pickup", "equip", "wield", "remove", "drop", "stow"),
+        ("pickup", "equip", "wield", "remove", "drop", "stow", "pack", "unpack"),
         ("core", "local_map", "inventory", "ground_options"),
         "Requested location and equipment verified; worn drop/stow prerequisites are executed; results include contents integrity, cached load and burden from the DFHack unit helper",
     ),
@@ -35,7 +40,7 @@ GROUPS = (
     (
         ("walk_to", "use_stairs", "move"),
         ("core", "local_map"),
-        "Requested position verified; walk_to uses native path goals when native_path dependencies are present and no explicit route constraints were supplied",
+        "Requested position verified; walk_to uses native path goals when native_path dependencies are present and no explicit route constraints were supplied, and accepts unrevealed destinations that DFHack reports as connected",
     ),
     (
         ("wait",),
@@ -60,7 +65,7 @@ GROUPS = (
     (
         ("travel_to", "end_travel"),
         ("core", "travel"),
-        "Requested travel coordinates verified; end_travel verifies the local adventurer is loaded",
+        "Requested travel coordinates verified after route auto steering by region and embark terrain; end_travel verifies the local adventurer is loaded",
     ),
     (("set_posture",), ("core", "posture"), "Requested standing/prone flag verified"),
     (("set_sneaking",), ("core", "sneaking"), "Requested native sneaking flag verified"),

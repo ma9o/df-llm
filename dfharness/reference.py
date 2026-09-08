@@ -50,7 +50,7 @@ SHARED_ARGS = {
     "x": "Local map x",
     "y": "Local map y",
     "z": "Local map z",
-    "unit_id": "Native unit ID",
+    "unit_id": "Native unit ID; hf:FIGURE_ID also accepted",
     "item_id": "Native item ID",
     "container_id": "Carried container ID",
     "portions": "Portions, 1..32 (default 1)",
@@ -228,7 +228,7 @@ COMMANDS: dict[str, Command] = {
             """
         ),
         "args": {
-            "unit_id": "Native unit ID from look or navigation",
+            "unit_id": "Native unit ID from look or navigation; hf:FIGURE_ID also accepted",
             "view": "concise omits item definitions; full returns the complete inspection",
         },
     },
@@ -350,7 +350,9 @@ COMMANDS: dict[str, Command] = {
             Requires an open trade (open-trade). take lists the merchant's goods,
             give your offered goods. Filtering happens before item profiles are
             built. base_value is the native value, not an accepted price; unknown
-            weights stay unknown. An empty catalog keeps its zone identity and does
+            weights stay unknown. container_id marks a row stored inside another
+            catalog item; contained marks a row already included through its
+            selected container. An empty catalog keeps its zone identity and does
             not prove an empty shop.
             """
         ),
@@ -382,6 +384,18 @@ COMMANDS: dict[str, Command] = {
         ),
         "args": {"dispatch_id": "Dispatch ID from the running command's receipt or session"},
     },
+    "companions": {
+        "summary": "Your pets and current mount with stable figure IDs and current unit IDs.",
+        "details": _text(
+            """
+            Lists loaded animals owned by the adventurer and the mount being
+            ridden: figure_id (stable across reloads), unit_id (current), position,
+            visibility, adjacency, whether it is the mount and how many items it
+            carries. Pass hf:FIGURE_ID to mount, pack, unpack, claim-pet and every
+            other unit-targeting command; the harness resolves it every step.
+            """
+        ),
+    },
     "keys": {
         "summary": "Development: list DF interface key names, optionally filtered.",
         "details": "Names are valid values for the key command. Listing sends no input.",
@@ -411,8 +425,10 @@ COMMANDS: dict[str, Command] = {
             GeneralImports, Carpenter or LeatherGoods. Results give travel
             destinations, loaded zone centres and building facing. --stock adds item
             counts from loaded Shop subzones and production allotments by category;
-            use the Shop zone IDs it returns with open-trade. A record does not prove
-            a shopkeeper or stock is present.
+            use the Shop zone IDs it returns with open-trade, or the stable record id
+            with open-trade --building. --stock also lists keepers: the zone's
+            assigned merchants with figure_id, current unit_id, position and whether
+            they stand inside. A record does not prove a shopkeeper or stock is present.
             """
         ),
         "args": {
@@ -620,7 +636,7 @@ COMMANDS: dict[str, Command] = {
         )
         + "\n"
         + _ROUTE_NOTE,
-        "args": {"unit_id": "Native unit ID of the listener"},
+        "args": {"unit_id": "Native unit ID of the listener; hf:FIGURE_ID also accepted"},
     },
     "end-conversation": {
         "summary": "Close the conversation interface and verify it closed.",
@@ -639,13 +655,75 @@ COMMANDS: dict[str, Command] = {
             """
         ),
         "args": {
-            "unit_id": "Merchant unit ID",
-            "shop_id": "Loaded Shop zone ID from shops --stock",
+            "unit_id": "Merchant unit ID; hf:FIGURE_ID also accepted",
+            "shop_id": "Loaded Shop zone ID from shops --stock (changes on reload)",
+            "building": "Shop record ID from shops (stable); resolved to today's Shop zone",
         },
     },
     "close-trade": {
         "summary": "Close the native trade interface without transacting.",
         "details": "Pending offers are discarded by the game.",
+    },
+    "mount": {
+        "summary": "Ride the adjacent animal UNIT_ID through the game's own mount command.",
+        "details": _text(
+            """
+            Approaches the animal to an adjacent tile, realizes DF's native mount
+            option and verifies the rider flag and mount relationship from unit
+            state. A stray tame mount becomes yours by being ridden; the game's own
+            refusals return as facts. The animal must be a mount-capable creature,
+            visible and alive. Riding uses the animal's movement; pack items onto it
+            with stow --onto-unit and take them back with pickup.
+            """
+        ),
+        "args": {"unit_id": "Animal unit ID; hf:FIGURE_ID also accepted"},
+    },
+    "dismount": {
+        "summary": "Get off the current mount through the game's own dismount command.",
+        "details": "Verified from the rider flag. Accepts no targets.",
+    },
+    "pack": {
+        "summary": "Put carried item_id onto pack animal UNIT_ID through the native put menu.",
+        "details": _text(
+            """
+            Approaches the animal if needed, removes the item first if worn, opens
+            the native put menu, selects the item, then selects the animal as the
+            destination and verifies the item in the animal's inventory. Works while
+            riding the animal or standing beside it. The animal must be visible.
+            """
+        ),
+        "args": {"item_id": "Carried item ID", "onto": "Pack animal unit ID"},
+    },
+    "unpack": {
+        "summary": "Take item_id back from pack animal UNIT_ID through the native get menu.",
+        "details": _text(
+            """
+            Approaches the animal if needed, opens the native get menu, selects
+            the take-from-animal entry for the item and verifies it is carried.
+            """
+        ),
+        "args": {"item_id": "Item ID carried by the animal", "from": "Pack animal unit ID"},
+    },
+    "claim-pet": {
+        "summary": "Claim the adjacent animal UNIT_ID as a pet through the game's own command.",
+        "details": _text(
+            """
+            Approaches the animal, realizes DF's native claim option and verifies
+            the pet-owner relationship on the animal. A claimed animal follows you
+            and appears on your map. The game decides whether the claim is allowed.
+            """
+        ),
+        "args": {"unit_id": "Animal unit ID; hf:FIGURE_ID also accepted"},
+    },
+    "lead-animal": {
+        "summary": "Lead the adjacent animal UNIT_ID through the game's own lead command.",
+        "details": "Verified from the adventurer's leading relationship. Leading reduces speed.",
+        "args": {"unit_id": "Animal unit ID; hf:FIGURE_ID also accepted"},
+    },
+    "stop-leading": {
+        "summary": "Release the led animal UNIT_ID through the game's own command.",
+        "details": "Verified from the adventurer's leading relationship.",
+        "args": {"unit_id": "Animal unit ID; hf:FIGURE_ID also accepted"},
     },
     "trade": {
         "summary": "Submit an exact offer in the open trade and verify the transfer.",
@@ -660,16 +738,26 @@ COMMANDS: dict[str, Command] = {
             destination quantities and your currency change. A refusal or counteroffer
             returns needs_input with the native reply and any counter amounts; you
             choose whether to submit a new explicit offer. base_value is not an
-            accepted price. Sale items must be held: compose close_trade, remove,
-            open_trade and trade to sell equipped items. Nonempty containers and
-            contained rows are unsupported. The button lookup requires English UI
-            text. An unverified submission is never repeated by resume.
+            accepted price. A merchant row stored inside an unselected container
+            (barter reports its container_id) is bought as that item alone;
+            verification also proves that no unrequested non-coin item entered or
+            left your inventory. Buying a nonempty container is unsupported. DF pays
+            an offer with its largest coins first; --spend cheapest (default) lets
+            it draw only on the cheapest denominations that cover the offer, so
+            copper goes before silver and gold. --spend native keeps DF's choice.
+            Change from the merchant still arrives in the merchant's largest coins,
+            and the restriction lasts for the open trade. Sale items must
+            be held separately: compose close_trade, remove, open_trade and trade
+            to sell equipped items, and take stowed items out first. The button
+            lookup requires English UI text. An unverified submission is never
+            repeated by resume.
             """
         ),
         "args": {
-            "unit_id": "Merchant unit ID of the open trade",
+            "unit_id": "Merchant unit ID of the open trade; hf:FIGURE_ID also accepted",
             "offer_currency": "Currency you offer, native units",
             "request_currency": "Currency you ask for, native units",
+            "spend": "Coin stacks DF may draw on: cheapest denominations covering the offer (default) or native",
         },
     },
     "save-game": {
@@ -700,7 +788,7 @@ COMMANDS: dict[str, Command] = {
         )
         + "\n"
         + _ROUTE_NOTE,
-        "args": {"unit_id": "Target unit ID"},
+        "args": {"unit_id": "Target unit ID; hf:FIGURE_ID also accepted"},
     },
     "strike": {
         "summary": "One aimed melee attempt: approach, aim, set style, submit, verify the effect.",
@@ -723,7 +811,7 @@ COMMANDS: dict[str, Command] = {
         + "\n"
         + _ROUTE_NOTE,
         "args": {
-            "unit_id": "Target unit ID",
+            "unit_id": "Target unit ID; hf:FIGURE_ID also accepted",
             "body_part_id": "Target body-part ID from unit ID",
             "attack_index": "Attack index from item ID, or the body-plan index for a natural attack",
             "style": "Attack style",
@@ -771,7 +859,12 @@ COMMANDS: dict[str, Command] = {
         "summary": "Fill a carried container from tile X Y Z with MATERIAL to native capacity.",
         "details": _text(
             """
-            Existing contents must be fully observed and of the same material.
+            Existing contents must be fully observed: the requested material,
+            solid objects such as coins, or nothing; another liquid or frozen
+            material blocks the fill. Snow fills as WATER in the Powder state.
+            Environment sources one level below or above the character, such as
+            a river surface under its bank, are approached on the character's
+            level and left to the native option list.
             Fullness is verified by capacity and summed volumes; additional
             selections require volume progress. Freezing or melting can change item
             IDs without changing the goal. A filled container is not necessarily
@@ -839,7 +932,17 @@ COMMANDS: dict[str, Command] = {
             """
             Travel tiles are 16 local tiles; three make one embark tile. Uses native
             directional moves through the current site's travel grid and then
-            overland; there is no native travel route command. Overland input can
+            overland; there is no native travel route command. --route auto
+            (default) plans a coarse route over the world's region records, treating
+            ocean and lakes as impassable and weighting rivers by flow, with frozen
+            rivers (cold regions) counted as crossable ice and mountains refused,
+            then aims at each waypoint. Each move follows the embark-level terrain
+            the game holds around the party (water, mountains, warm rivers walked
+            around; a waypoint that cannot be approached is skipped). When the
+            game still refuses a move, probes run perpendicular to the refused
+            heading at growing offsets (up to 24 per trip). Results carry route
+            (waypoints, current waypoint, detours). --route direct steps
+            straight. Overland input can
             advance several tiles while the game still reports readiness, so each
             move waits for a short quiet window of unchanged travel state before
             verifying coordinates. Returns at blocked movement, a native restriction
@@ -853,6 +956,7 @@ COMMANDS: dict[str, Command] = {
             "x": "Travel-map x",
             "y": "Travel-map y",
             "arrival_radius": "Stop within this many travel tiles, 0..48 (default 0)",
+            "route": "auto (default) routes around ocean, lakes and rivers with sidestep probes; direct steps straight",
         },
     },
     "end-travel": {
@@ -965,17 +1069,33 @@ COMMANDS: dict[str, Command] = {
         "details": _text(
             """
             DF computes and follows the route; one path command is one input
-            regardless of tile count, and arrival is verified from unit state. Step
+            regardless of tile count, and arrival is verified from unit state. A
+            prone character stands up first, since a prone walk is a crawl. While
+            riding, DF drives the mount and the walk owns the follow goal it places
+            on the animal; arrival is still the rider's tile. Step
             mode stops at the first movement boundary; resume keeps the destination.
             Interruption cancels the remaining goal; a move already submitted may
-            finish. A stale native reachability cache returns a no-connection
-            blocker and is never refreshed. --arrival-radius accepts an observed
-            reachable neighbour. Supplying --allow-occupied, --max-liquid-depth,
+            finish. Any tile DFHack reports as walkable-connected is an accepted
+            destination, revealed or not; revealed endpoints are preferred within
+            --arrival-radius, and DF's handler decides whether it paths into
+            unrevealed ground. The destination must lie inside the loaded map; use
+            travel-to for farther targets. The native adapter receives the target
+            as an absolute world tile and converts it against the live map origin
+            when the input is sent, so a native map shift between your observation
+            and the input cannot redirect the walk. A long walk can shift the local
+            map origin, so receipts report positions in the current frame; read
+            game-status map_origin before reusing older coordinates. A stale native
+            reachability cache returns a no-connection blocker and is never
+            refreshed. Supplying --allow-occupied, --max-liquid-depth,
             --blocked-tiles or --extend-route switches to the legacy observed-route
             adapter, which plans on one z-level through the observed crop; prefer
             the native default.
             """
         ),
+        "args": {
+            "absolute": "x y z are absolute world tiles (map_origin + local), immune to re-bases",
+            "posture": "stand (default) rises before walking; keep walks prone deliberately",
+        },
     },
     "select-option": {
         "summary": "Select a menu option by its guarded ID from the current choices.",
@@ -1014,7 +1134,7 @@ COMMANDS: dict[str, Command] = {
             viewport and not covered by UI text.
             """
         ),
-        "args": {"unit_id": "Visible unit ID to pick"},
+        "args": {"unit_id": "Visible unit ID to pick; hf:FIGURE_ID also accepted"},
     },
     "key": {
         "summary": "Development: send one named interface key and observe.",

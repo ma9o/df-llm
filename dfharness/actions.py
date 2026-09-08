@@ -45,6 +45,7 @@ ACTIONS = [
             },
             "offer_currency": {"type": "integer", "minimum": 0, "maximum": 2147483647},
             "request_currency": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+            "spend": {"enum": ["cheapest", "native"]},
         },
         ("type", "unit_id", "take", "give"),
     ),
@@ -53,6 +54,18 @@ ACTIONS = [
         ("type", "unit_id", "shop_id"),
     ),
     obj({"type": {"const": "close_trade"}}, ("type",)),
+    *[
+        obj({"type": {"const": name}, "unit_id": COORD}, ("type", "unit_id"))
+        for name in ("mount", "claim_pet", "lead_animal", "stop_leading")
+    ],
+    obj({"type": {"const": "dismount"}}, ("type",)),
+    *[
+        obj(
+            {"type": {"const": name}, "item_id": COORD, "unit_id": COORD},
+            ("type", "item_id", "unit_id"),
+        )
+        for name in ("pack", "unpack")
+    ],
     *[
         obj(
             {"type": {"const": name}, "hours": {"type": "integer", "minimum": 1, "maximum": 24}},
@@ -192,6 +205,7 @@ ACTIONS = [
             "x": COORD,
             "y": COORD,
             "arrival_radius": {"type": "integer", "minimum": 0, "maximum": 48},
+            "route": {"enum": ["auto", "direct"]},
         },
         ("type", "x", "y"),
     ),
@@ -352,3 +366,15 @@ def action_reference(name=None, *, expand=False):
         "policy": "Persist mode=complete and acknowledge with settings; supply interruption conditions. Controller selects targets and tactics; harness executes prerequisites.",
         "receipts": "Read values and said first, then outcome, blocker and changes. Resume unfinished dispatches by ID; never blindly repeat an uncertain input.",
     }
+
+
+# A historical figure ID stands in for a unit ID anywhere a unit is targeted.
+for _schema in ACTIONS:
+    _props = _schema["properties"]
+    if "unit_id" in _props and "unit_id" in _schema["required"]:
+        _schema["required"] = [r for r in _schema["required"] if r != "unit_id"]
+        _props["figure_id"] = COORD
+        _schema["oneOf"] = [{"required": ["unit_id"]}, {"required": ["figure_id"]}]
+    if _props["type"]["const"] == "walk_to":
+        _props["absolute"] = {"type": "boolean"}
+        _props["posture"] = {"enum": ["stand", "keep"]}

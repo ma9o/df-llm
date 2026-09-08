@@ -150,21 +150,23 @@ def fill_state(view, container_id, material):
         return None
     capacity = container.get("capacity_volume_raw")
     contents = container.get("contents", [])
+    same = [i for i in contents if i.get("material_ref", {}).get("token") == material]
+    # Solid objects such as coins share a waterskin in the game; only another
+    # liquid or frozen material makes the fill ambiguous.
+    other = [i for i in contents if i not in same]
     if (
         type(capacity) is not int
         or capacity <= 0
-        or any(
-            i.get("material_ref", {}).get("token") != material
-            or type(i.get("volume_raw")) is not int
-            or i["volume_raw"] < 0
-            for i in contents
-        )
+        or any(type(i.get("volume_raw")) is not int or i["volume_raw"] < 0 for i in contents)
+        or any(i.get("type") not in ("COIN", "TOOL", "WEAPON", "AMMO") for i in other)
     ):
         return None
     return {
         "capacity_volume_raw": capacity,
         "contents_volume_raw": sum(i["volume_raw"] for i in contents),
-        "item_ids": [i["id"] for i in contents],
+        "material_volume_raw": sum(i["volume_raw"] for i in same),
+        "item_ids": [i["id"] for i in same],
+        "other_item_ids": [i["id"] for i in other],
         "material": material,
     }
 
@@ -174,7 +176,7 @@ def fill_effect(action, ctx, view, _target):
     if current is None:
         return result(
             "needs_input",
-            "Filling requires a carried container with known positive capacity and complete contents of the requested material (or empty).",
+            "Filling requires a carried container with known positive capacity and complete contents: the requested material, solid objects such as coins, or empty.",
             {"container_id": action["container_id"], "blocker_kind": "verification"},
         )
     initial = ctx.setdefault("fill_initial", current)
@@ -191,7 +193,7 @@ def fill_effect(action, ctx, view, _target):
             {"container_id": action["container_id"], **current},
         )
     if ctx.get("sent"):
-        if current["contents_volume_raw"] > ctx["fill_before"]["contents_volume_raw"]:
+        if current["material_volume_raw"] > ctx["fill_before"]["material_volume_raw"]:
             ctx.pop("sent")
             return {"advanced": True}
         return result(
@@ -416,7 +418,14 @@ def next_environment(workflow, view):
         return result(
             "needs_input", "Environment interaction requires the local adventure input view."
         )
-    decision = next_walk(view, target, action, arrival_radius=1, context=ctx)
+    position = view["status"].get("position") or {}
+    approach = dict(target)
+    if type(position.get("z")) is int and abs(position["z"] - target["z"]) == 1:
+        # A river surface or pool lies one level below its bank, and DF offers
+        # the interaction from the bank tile. Approach on the character's level
+        # and let the native option list decide whether the source is in reach.
+        approach["z"] = position["z"]
+    decision = next_walk(view, approach, action, arrival_radius=1, context=ctx)
     if decision.get("outcome") != "completed":
         return decision
     ctx["opened"] = True

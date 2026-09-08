@@ -4,7 +4,7 @@ local function build(h)
 -- Submit the game's AdventureAutomove command. DF computes and follows the path.
 -- Pausing on a watch-data change leaves policy evaluation to the shared controller
 -- engine. No direction selection, pathfinder, threat model or action timers here.
-local M={}
+local M={RIDER_REISSUE_LIMIT=64,MOUNT_STOP_TOLERANCE=2}
 local function pos(p)return {x=p.x,y=p.y,z=p.z}end
 local function absolute(p)
     local map=df.global.world.map
@@ -16,6 +16,7 @@ function M.state()
         assert(type(dfhack.units.setPathGoal)=='function','DFHack setPathGoal is unavailable')
         assert(type(df.adventure_movement_pathst.new)=='function','Native movement command is unavailable')
         assert(type(df.unit_path_goal.AdventureAutomove)=='number','Native automove goal is unavailable')
+        assert(type(df.unit_path_goal.FollowCommand)=='number','Native follow goal is unavailable')
         assert(type(df.dungeon_control_state.CONTINUE)=='number','Native continuation is unavailable')
         assert(type(df.unit_path_goal.None)=='number' and type(df.dungeon_control_state.PROMPT)=='number',
             'Native goal cancellation is unavailable')
@@ -32,6 +33,15 @@ function M.prepare(action,request)
     assert(state.goal=='None','Another native path goal is already active')
     local u=assert(dfhack.world.getAdventurer())
     local target=action.destination
+    if action.absolute_destination then
+        -- The controller's local target can predate a native map rebase that
+        -- happened after its observation. The absolute world tile is the request.
+        local map,abs=df.global.world.map,action.absolute_destination
+        for _,k in ipairs({'x','y','z'})do
+            assert(type(abs[k])=='number' and abs[k]%1==0,'Invalid absolute path destination')
+        end
+        target={x=abs.x-map.region_x*48,y=abs.y-map.region_y*48,z=abs.z-map.region_z}
+    end
     local x,y,z=dfhack.maps.getTileSize()
     for k,limit in pairs({x=x,y=y,z=z})do
         assert(type(target[k])=='number' and target[k]%1==0 and target[k]>=0 and target[k]<limit,
@@ -42,26 +52,30 @@ function M.prepare(action,request)
     -- Select an allowed endpoint, never a route. DF's connected groups decide
     -- reachability, and DF's pathfinder handles every tile between the endpoints.
     -- This also permits approaching a unit, wall or liquid without occupying it.
-    local goal,best
+    -- An unrevealed tile is still DF's own connected terrain: a revealed endpoint
+    -- is preferred, and DF's handler decides whether it paths to a hidden one.
+    local goal,best,revealed
     for gy=math.max(0,target.y-radius),math.min(y-1,target.y+radius)do
         for gx=math.max(0,target.x-radius),math.min(x-1,target.x+radius)do
             local candidate={x=gx,y=gy,z=target.z}
-            if dfhack.maps.isTileVisible(gx,gy,target.z) and dfhack.maps.canWalkBetween(u.pos,candidate)then
-                local distance=(gx-u.pos.x)^2+(gy-u.pos.y)^2
-                if not best or distance<best then goal=candidate;best=distance end
+            if dfhack.maps.canWalkBetween(u.pos,candidate)then
+                local seen=dfhack.maps.isTileVisible(gx,gy,target.z)
+                local rank=(gx-u.pos.x)^2+(gy-u.pos.y)^2+(seen and 0 or 1e9)
+                if not best or rank<best then goal=candidate;best=rank;revealed=seen end
             end
         end
     end
-    assert(goal,'No visible endpoint within the arrival radius has a DFHack walkable connection; the native cache may be stale')
+    assert(goal,'No endpoint within the arrival radius has a DFHack walkable connection; the native cache may be stale')
     local policy=request.path_execution
     assert(type(policy)=='table' and (policy.mode=='step' or policy.mode=='complete'),'Missing path execution mode')
     assert(type(request.path_timeout_ms)=='number' and request.path_timeout_ms>0
         and request.path_timeout_ms<=300000,'Invalid native path deadline')
     return {kind='walk',available=true,phase='prepared',unit_id=u.id,
         destination=absolute(goal),target=absolute(target),arrival_radius=radius,
-        source=absolute(u.pos),adapter='native_path'}
+        endpoint_revealed=revealed,source=absolute(u.pos),adapter='native_path'}
 end
 function M.start(e,_,request,session,receipt)
+    local realize -- assigned below; kept off e, which is serialized to JSON
     local world_epoch=session.world_epoch
     e.world_epoch=world_epoch
     local started=dfhack.getTickCount()
@@ -98,14 +112,26 @@ function M.start(e,_,request,session,receipt)
     local baseline=watch()
     stream=next(types) and h.report_events.watch(cursor,4096)
     if stream then e.report_observer=stream.stats end
+    -- A rider's path command drives the mount: DF sets a FollowCommand goal on
+    -- the ridden unit and leaves the rider's own goal empty. The mover is the
+    -- unit whose goal the watcher owns and cancels; arrival is the rider's tile.
+    local function mover(u)
+        if not u.flags1.rider then return u,df.unit_path_goal.AdventureAutomove end
+        local index=df.unit_relationship_type.RiderMount
+        local mount=type(index)=='number' and df.unit.find(u.relationship_ids[index])
+        assert(mount,'The rider has no loaded mount')
+        return mount,df.unit_path_goal.FollowCommand
+    end
     local function owned(u)
-        return u.path.goal==df.unit_path_goal.AdventureAutomove and equal(absolute(u.path.dest),e.destination)
+        local m,goal=mover(u)
+        return m.path.goal==goal and equal(absolute(m.path.dest),e.destination)
     end
     local function halt(phase,why,u,sample)
         -- Cancel only this goal via DFHack's API. A Move already in flight is
         -- allowed to settle; neither its destination nor its timer is edited.
         if u and owned(u)then
-            dfhack.units.setPathGoal(u,pos(u.pos),df.unit_path_goal.None)
+            local m=mover(u)
+            dfhack.units.setPathGoal(m,pos(m.pos),df.unit_path_goal.None)
             if u.dungeon_control==df.dungeon_control_state.CONTINUE then
                 u.dungeon_control=df.dungeon_control_state.PROMPT
             end
@@ -141,7 +167,14 @@ function M.start(e,_,request,session,receipt)
         end
         local here=absolute(u.pos)
         local target=e.target
-        local arrived=here.z==target.z and math.max(math.abs(here.x-target.x),math.abs(here.y-target.y))<=e.arrival_radius
+        local gap=math.max(math.abs(here.x-target.x),math.abs(here.y-target.y))
+        local arrived=here.z==target.z and gap<=e.arrival_radius
+        if not arrived and u.flags1.rider and here.z==target.z and gap<=M.MOUNT_STOP_TOLERANCE
+            and mover(u).path.goal==df.unit_path_goal.None then
+            -- DF ends a mount's follow within two tiles of the destination and
+            -- returns control; that is where a ridden animal stops.
+            arrived=true;e.mount_stopped_short=gap
+        end
         if arrived and control==df.adventure_game_loop_type.TAKING_INPUT then
             halt('completed','Destination reached',u);return
         end
@@ -150,7 +183,26 @@ function M.start(e,_,request,session,receipt)
             halt('paused','incremental_boundary',u);return
         end
         if not owned(u)then
-            halt('blocked','Native path ended or was replaced before arrival',nil);return
+            if e.grace and e.grace>0 then e.grace=e.grace-1
+            elseif u.flags1.rider and control~=df.adventure_game_loop_type.TAKING_INPUT then
+                -- The mount's goal ended mid-turn; let the game finish processing.
+            elseif u.flags1.rider then
+                -- DF drops a mount's follow goal at obstacles, ramps and
+                -- interruptions, then waits for input. While the rider keeps
+                -- closing the gap, re-issue the path from the current tile. A
+                -- bounded budget and a required progress step stop any stall loop.
+                local progressed=not e.reissue_pos or not equal(here,e.reissue_pos)
+                if progressed and (e.reissues or 0)<M.RIDER_REISSUE_LIMIT then
+                    e.reissues=(e.reissues or 0)+1;e.reissue_pos=here;e.grace=5
+                    local rok,rerr=realize()
+                    if not rok then halt('unavailable',tostring(rerr):sub(1,240),u);return end
+                    -- DF resets the rider to PROMPT when the mount stops; restore
+                    -- the requested continuation before passing the turn.
+                    u.dungeon_control=request.path_execution.mode=='complete'
+                        and df.dungeon_control_state.CONTINUE or df.dungeon_control_state.PROMPT
+                    h.input('A_SHORT_WAIT')
+                else halt('blocked','Native path ended or was replaced before arrival',nil);return end
+            else halt('blocked','Native path ended or was replaced before arrival',nil);return end
         end
         assert(dfhack.timeout(1,'frames',guarded_sample),'Native path watcher could not be scheduled')
     end
@@ -163,20 +215,27 @@ function M.start(e,_,request,session,receipt)
         if not ok then failed(err)end
     end
     local u=assert(dfhack.world.getAdventurer())
-    local command=df.adventure_movement_pathst:new()
-    local ok,err=pcall(function()
-        local map=df.global.world.map
-        local goal={x=e.destination.x-map.region_x*48,y=e.destination.y-map.region_y*48,z=e.destination.z-map.region_z}
-        command.source:assign(u.pos);command.dest:assign(goal);command.vpz=goal.z
-        command.is_acrobatic=false;command.is_down_through_hatch=false
-        command.option_list_context=df.adventure_interface_option_list_context_type.DIRECT_CLICK_MOVE_ONLY
-        assert(command:hasRealize(),'Native path command cannot be realized')
-        command:doRealize()
-    end)
-    command:delete()
+    -- Realize DF's own path command from the current tile. Re-callable so a
+    -- rider whose mount drops its goal can resume toward the same destination.
+    realize=function()
+        local command=df.adventure_movement_pathst:new()
+        local ok,err=pcall(function()
+            local map=df.global.world.map
+            local goal={x=e.destination.x-map.region_x*48,y=e.destination.y-map.region_y*48,z=e.destination.z-map.region_z}
+            command.source:assign(u.pos);command.dest:assign(goal);command.vpz=goal.z
+            command.is_acrobatic=false;command.is_down_through_hatch=false
+            command.option_list_context=df.adventure_interface_option_list_context_type.DIRECT_CLICK_MOVE_ONLY
+            assert(command:hasRealize(),'Native path command cannot be realized')
+            command:doRealize()
+        end)
+        command:delete()
+        return ok,err
+    end
+    local ok,err=realize()
     if not ok then failed(err);error(err)end
     ok,err=pcall(function()
-        assert(owned(u),'Native handler did not accept the requested path')
+        e.grace=u.flags1.rider and 5 or 0
+        assert(owned(u) or e.grace>0,'Native handler did not accept the requested path')
         u.dungeon_control=request.path_execution.mode=='complete'
             and df.dungeon_control_state.CONTINUE or df.dungeon_control_state.PROMPT
         e.phase='running'

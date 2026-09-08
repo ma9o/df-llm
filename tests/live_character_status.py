@@ -29,6 +29,7 @@ def native_fixtures(port):
         ("items.lua", "items.lua"),
         ("barter.lua", "barter.lua"),
         ("exchange.lua", "exchange.lua"),
+        ("mount.lua", "mount.lua"),
         ("rest.lua", "rest.lua"),
         ("aim.lua", "aim.lua"),
         ("saving.lua", "quicksave.lua"),

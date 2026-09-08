@@ -35,7 +35,11 @@ def next_native_walk(view, target, constraints, radius, context):
         }
     if context is not None:
         context["walk_adapter"] = "native_path"
-    return {
-        "input": {"type": "path_to", "destination": target, "arrival_radius": radius},
-        "capture": {"kind": "walk"},
-    }
+    command = {"type": "path_to", "destination": target, "arrival_radius": radius}
+    origin = view["status"].get("map_origin")
+    if origin and all(type(origin.get(k)) is int for k in ("x", "y", "z")):
+        # The game keeps running between this observation and the input. A
+        # native map rebase in that gap would redirect a local target, so the
+        # adapter converts the absolute tile against the live origin instead.
+        command["absolute_destination"] = {k: target[k] + origin[k] for k in ("x", "y", "z")}
+    return {"input": command, "capture": {"kind": "walk"}}
