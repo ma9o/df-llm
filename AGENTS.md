@@ -268,10 +268,19 @@ Remove this section when the list is empty.
 
 ## Local game reference
 
-- Search `.df-llm/wiki/articles/` for game mechanics and tactics. The local
-  MediaWiki source mirror includes templates, categories and modules; its
-  manifest and page headers retain coverage, revision URLs and dates. See
-  `docs/local-wiki.md` for offline lookups and explicit refresh commands.
+- Use `.df-llm/wiki/articles/` as the first reference for Dwarf Fortress
+  mechanics, tactics, trading and equipment decisions. Search with `rg` and
+  read the matching local articles; follow redirects and template references
+  locally. The MediaWiki source mirror includes templates, categories and
+  modules, with coverage and revision dates in its manifest and page headers.
+- Do not browse the online wiki to repeat a lookup answered by the local copy
+  or merely to obtain a citation. Cite the local file or its recorded source
+  URL without fetching it again. Use the running game's native state and the
+  pinned DFHack references to resolve questions about the installed version.
+- Go online only for information missing from the local references, a concrete
+  freshness issue, or an explicit user request. Identify that gap before
+  browsing. See `docs/local-wiki.md` for offline lookups and explicit refresh
+  commands; routine research must not refresh the mirror.
 - Wiki text is reference material, not execution policy. Check historical-version
   warnings and distinguish general mechanics from this unit's actual native
   attributes, creature flags, equipment and injuries.
